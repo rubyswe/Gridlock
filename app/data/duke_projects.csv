@@ -1,0 +1,11 @@
+project_id,utility,name,lat,lon,start_date,end_date,description
+DEF-001,Duke Energy Florida,DeLand West-Dona Vista 230kV Transmission Line,29.0033,-81.3373,2028-06-01,2030-01-31,"Real project (FPSC Docket 20250078-EI). 26.26-mile 230kV line from DeLand West Substation (Volusia) to Dona Vista Substation (Lake County), in-service Jan 2030. Includes 69kV rebuild along same route."
+DEF-002,Duke Energy Florida,Eustis Substation Reinforcement,28.8528,-81.6856,2028-04-01,2028-10-31,"Synthetic. Substation reinforcement along the DeLand West-Dona Vista corridor near Eustis, Lake County."
+DEF-003,Duke Energy Florida,Umatilla Distribution Upgrade,28.9339,-81.6620,2027-05-01,2027-11-15,"Synthetic. Distribution upgrade near Umatilla, Lake County, along the DWDV corridor path."
+DEF-004,Duke Energy Florida,DeLand Feeder Reinforcement,29.0283,-81.3031,2027-08-01,2028-02-28,"Synthetic. Local distribution feeder reinforcement in DeLand, Volusia County, near DeLand West substation."
+DEF-005,Duke Energy Florida,DeBary Substation Upgrade,28.8850,-81.3234,2026-11-01,2027-06-30,"Synthetic. Substation upgrade in DeBary, Volusia County."
+DEF-006,Duke Energy Florida,Daytona Beach Transmission Tie,29.2108,-81.0228,2028-02-01,2028-09-30,"Synthetic. New transmission tie-in near Daytona Beach, Volusia County."
+DEF-007,Duke Energy Florida,Leesburg Substation Expansion,28.8111,-81.8637,2027-03-01,2027-10-31,"Synthetic. Substation expansion in Leesburg, Lake County."
+DEF-008,Duke Energy Florida,Deltona Distribution Reinforcement,28.9005,-81.2637,2026-09-01,2027-03-31,"Synthetic. Distribution reinforcement in Deltona, Volusia County."
+DEF-009,Duke Energy Florida,Mount Dora Feeder Upgrade,28.8003,-81.6445,2028-01-01,2028-06-30,"Synthetic. Feeder upgrade in Mount Dora, Lake County."
+DEF-010,Duke Energy Florida,Orange City Substation Rebuild,28.9481,-81.2953,2027-07-01,2028-03-31,"Synthetic. Substation rebuild in Orange City, Volusia County."
