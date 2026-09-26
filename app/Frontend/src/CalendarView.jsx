@@ -10,6 +10,7 @@ import {
   riskKey,
   toISODate,
   utilityColor,
+  utilityLabel,
 } from './utils'
 
 const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
@@ -272,9 +273,12 @@ export default function CalendarView({ projects, overlaps, risks, conflictIndex,
                     onClick={() => onShowRisk(r)}
                     title="Show on map"
                   >
-                    <span className="badge risk">
-                      {RISK_META[r.type].icon} {RISK_META[r.type].label}
-                      {r.type === 'road' ? ` · ${r.road}` : ''}
+                    <span className="badges">
+                      <span className="badge risk">
+                        {RISK_META[r.type].icon} {RISK_META[r.type].label}
+                        {r.type === 'road' ? ` · ${r.road}` : ''}
+                      </span>
+                      {r.cross_state && <span className="badge cross-state">⇄ Cross-state</span>}
                     </span>
                     <span className="day-conflict-names">
                       {r.project_a.name} <em>and</em> {r.project_b.name}
@@ -297,7 +301,10 @@ export default function CalendarView({ projects, overlaps, risks, conflictIndex,
                     onClick={() => onShowConflict(o)}
                     title="Show on map"
                   >
-                    <span className={`badge ${o.severity}`}>{SEVERITY_LABEL[o.severity]}</span>
+                    <span className="badges">
+                      <span className={`badge ${o.severity}`}>{SEVERITY_LABEL[o.severity]}</span>
+                      {o.cross_state && <span className="badge cross-state">⇄ Cross-state</span>}
+                    </span>
                     <span className="day-conflict-names">
                       {o.project_a.name} <em>vs</em> {o.project_b.name}
                     </span>
@@ -321,7 +328,7 @@ export default function CalendarView({ projects, overlaps, risks, conflictIndex,
                         <div>
                           <div className="proj-name">{p.name}</div>
                           <div className="proj-util">
-                            {p.utility} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
+                            {utilityLabel(p)} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
                           </div>
                         </div>
                         {entry ? (

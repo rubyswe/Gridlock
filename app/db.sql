@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS projects (
     description TEXT,
     estimated_cost REAL,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    state TEXT,  -- two-letter state code, e.g. FL, AL
     -- Dependency fields
     requires_outage INTEGER NOT NULL DEFAULT 0,
     outage_start TEXT,

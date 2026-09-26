@@ -2,7 +2,13 @@ export const API_BASE = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
 // Colors are validated for color-vision deficiency against the dark surface.
 // Keep in sync with the CSS variables in index.css.
-export const UTILITY_COLOR = { FPL: '#3b82f6', 'Duke Energy Florida': '#d9661f' }
+export const UTILITY_COLOR = {
+  FPL: '#3b82f6',
+  'Duke Energy Florida': '#d9661f',
+  'Alabama Power': '#c2449a',
+}
+// Utilities offered in the add-project form, with the state each operates in
+export const UTILITY_STATES = { FPL: 'FL', 'Duke Energy Florida': 'FL', 'Alabama Power': 'AL' }
 export const SEVERITY_COLOR = {
   high: '#e5484d',
   'medium-spatial': '#8b6fe0',
@@ -149,4 +155,9 @@ export function buildRiskIndex(risks) {
 
 export function formatRange(startIso, endIso) {
   return `${formatDate(startIso)} → ${formatDate(endIso)}`
+}
+
+/** "FPL · FL" — utility name plus state when known. */
+export function utilityLabel(p) {
+  return p.state ? `${p.utility} · ${p.state}` : p.utility
 }

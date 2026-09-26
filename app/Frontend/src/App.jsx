@@ -22,7 +22,9 @@ import {
   riskKey,
   savePref,
   severityColor,
+  UTILITY_STATES,
   utilityColor,
+  utilityLabel,
 } from './utils'
 import './App.css'
 
@@ -32,6 +34,22 @@ function haversineMiles(lat1, lon1, lat2, lon2) {
   const dLon = toRad(lon2 - lon1)
   const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2
   return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
+}
+
+// Zoom to show every project once, when the data first arrives. After that
+// the user (or a selection) controls the view.
+function FitAll({ projects }) {
+  const map = useMap()
+  const done = useRef(false)
+  useEffect(() => {
+    if (done.current || projects.length === 0) return
+    done.current = true
+    map.fitBounds(
+      projects.map((p) => [p.lat, p.lon]),
+      { padding: [30, 30] },
+    )
+  }, [projects, map])
+  return null
 }
 
 // Small helper component so we can move the map imperatively whenever the
@@ -107,6 +125,15 @@ function DeleteButton({ project, onDelete, label = 'Delete' }) {
   )
 }
 
+function CrossStateBadge({ pair }) {
+  if (!pair.cross_state) return null
+  return (
+    <span className="badge cross-state" title="These projects are in different states">
+      ⇄ Cross-state {pair.project_a.state}–{pair.project_b.state}
+    </span>
+  )
+}
+
 function RiskChips({ risks }) {
   if (!risks?.length) return null
   return (
@@ -126,8 +153,11 @@ function RiskRow({ risk, isSelected, onSelect }) {
   return (
     <li className={`list-row${isSelected ? ' selected' : ''}`} onClick={() => onSelect(risk)}>
       <div className="row-top">
-        <span className="badge risk">
-          {meta.icon} {meta.label}
+        <span className="badges">
+          <span className="badge risk">
+            {meta.icon} {meta.label}
+          </span>
+          <CrossStateBadge pair={risk} />
         </span>
         <span className="distance">{risk.distance_miles} mi apart</span>
       </div>
@@ -136,7 +166,7 @@ function RiskRow({ risk, isSelected, onSelect }) {
           <span className="dot" style={{ background: utilityColor(p.utility) }} />
           <div>
             <div className="proj-name">{p.name}</div>
-            <div className="proj-util">{p.utility}</div>
+            <div className="proj-util">{utilityLabel(p)}</div>
           </div>
         </div>
       ))}
@@ -161,7 +191,10 @@ function ConflictRow({ overlap, risks, isSelected, onSelect, projectsById, onDel
   return (
     <li className={`list-row${isSelected ? ' selected' : ''}`} onClick={() => onSelect(overlap)}>
       <div className="row-top">
-        <span className={`badge ${overlap.severity}`}>{SEVERITY_LABEL[overlap.severity]}</span>
+        <span className="badges">
+          <span className={`badge ${overlap.severity}`}>{SEVERITY_LABEL[overlap.severity]}</span>
+          <CrossStateBadge pair={overlap} />
+        </span>
         <span className="distance">{overlap.distance_miles} mi apart</span>
       </div>
 
@@ -171,7 +204,7 @@ function ConflictRow({ overlap, risks, isSelected, onSelect, projectsById, onDel
           <div>
             <div className="proj-name">{p.name}</div>
             <div className="proj-util">
-              {p.utility} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
+              {utilityLabel(p)} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
             </div>
           </div>
           <DeleteButton project={projectsById.get(p.id)} onDelete={onDelete} label="×" />
@@ -212,7 +245,7 @@ function ClearRow({ project, nearest, isSelected, onSelect, onDelete }) {
         <div>
           <div className="proj-name">{project.name}</div>
           <div className="proj-util">
-            {project.utility} · {formatDate(project.start_date)} → {formatDate(project.end_date)}
+            {utilityLabel(project)} · {formatDate(project.start_date)} → {formatDate(project.end_date)}
           </div>
         </div>
         <DeleteButton project={project} onDelete={onDelete} label="×" />
@@ -229,6 +262,7 @@ function ClearRow({ project, nearest, isSelected, onSelect, onDelete }) {
 const EMPTY_FORM = {
   project_id: '',
   utility: 'FPL',
+  state: 'FL',
   name: '',
   lat: '',
   lon: '',
@@ -243,7 +277,8 @@ const EMPTY_FORM = {
   road_closure_end: '',
 }
 
-function NewProjectForm({ onCreated }) {
+function NewProjectForm({ onCreated, utilities }) {
+  const options = [...new Set([...Object.keys(UTILITY_STATES), ...utilities])]
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(EMPTY_FORM)
   const [status, setStatus] = useState(null)
@@ -268,6 +303,7 @@ function NewProjectForm({ onCreated }) {
           lat: parseFloat(form.lat),
           lon: parseFloat(form.lon),
           estimated_cost: form.estimated_cost ? parseFloat(form.estimated_cost) : null,
+          state: form.state || null,
           outage_start: form.requires_outage ? form.outage_start || null : null,
           outage_end: form.requires_outage ? form.outage_end || null : null,
           road_affected: form.road_affected.trim() || null,
@@ -301,10 +337,25 @@ function NewProjectForm({ onCreated }) {
     <form className="new-project-form" onSubmit={submit}>
       <div className="form-row">
         <input placeholder="Project ID (e.g. TEST-001)" value={form.project_id} onChange={update('project_id')} required />
-        <select value={form.utility} onChange={update('utility')}>
-          <option value="FPL">FPL</option>
-          <option value="Duke Energy Florida">Duke Energy Florida</option>
+        <select
+          value={form.utility}
+          onChange={(e) => setForm({ ...form, utility: e.target.value, state: UTILITY_STATES[e.target.value] || form.state })}
+        >
+          {options.map((u) => (
+            <option key={u} value={u}>
+              {u}
+            </option>
+          ))}
         </select>
+        <input
+          className="state-input"
+          placeholder="State"
+          maxLength={2}
+          pattern="[A-Za-z]{2}"
+          title="Two-letter state code, e.g. FL"
+          value={form.state}
+          onChange={(e) => setForm({ ...form, state: e.target.value.toUpperCase() })}
+        />
       </div>
       <input placeholder="Project name" value={form.name} onChange={update('name')} required />
       <div className="form-row">
@@ -663,7 +714,7 @@ export default function App() {
                     <Popup>
                       <strong>{p.name}</strong>
                       <br />
-                      {p.utility}
+                      {utilityLabel(p)}
                       <br />
                       {formatDate(p.start_date)} → {formatDate(p.end_date)}
                       {p.estimated_cost != null && (
@@ -730,16 +781,16 @@ export default function App() {
                 />
               )}
 
+              <FitAll projects={projects} />
               <FlyTo conflict={selectedPair} project={focusProject} />
             </MapContainer>
 
             <div className="legend">
-              <span>
-                <span className="dot" style={{ background: 'var(--fpl-color)' }} /> FPL
-              </span>
-              <span>
-                <span className="dot" style={{ background: 'var(--def-color)' }} /> Duke Energy Florida
-              </span>
+              {utilities.map((u) => (
+                <span key={u}>
+                  <span className="dot" style={{ background: utilityColor(u) }} /> {u}
+                </span>
+              ))}
               <span>Ring color:</span>
               <span>
                 <span className="ring" style={{ borderColor: SEVERITY_COLOR.high }} /> High
@@ -758,7 +809,7 @@ export default function App() {
               </span>
             </div>
 
-            <NewProjectForm onCreated={loadData} />
+            <NewProjectForm onCreated={loadData} utilities={utilities} />
             <HypotheticalList
               projects={hypotheticals}
               conflictIndex={conflictIndex}

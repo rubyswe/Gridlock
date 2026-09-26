@@ -1,8 +1,10 @@
 # Grid
 
-Cross-utility construction conflict detector. Flags FPL and Duke Energy Florida
-projects that overlap in location and/or time, and shows them on a map, as
-charts, and on a calendar.
+Cross-utility construction conflict detector. Flags projects from different
+utilities (FPL, Duke Energy Florida, and Alabama Power) that overlap in
+location and/or time, and shows them on a map, as charts, and on a calendar.
+Pairs that cross a state line (e.g. FPL in Northwest Florida vs. Alabama Power
+across Perdido Bay) are marked **Cross-state**.
 
 ## Run it
 
@@ -26,7 +28,8 @@ Optional: put `GEMINI_API_KEY=...` (and optionally `GEMINI_MODEL=...`) in
 
 ## Data
 
-Seed projects live in `app/data/*_projects.csv` and are synced into
+Seed projects live in `app/data/*_projects.csv` (any new file matching that
+pattern is picked up automatically; give each project a two-letter `state`) and are synced into
 `app/app.db` every time the API starts, so edits to the CSVs show up after a
 restart. Projects added through the UI are kept.
 

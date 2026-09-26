@@ -709,3 +709,8 @@ header h1 { font-size: 18px; margin: 0; }
   .risk-summary-row { grid-template-columns: 1fr; gap: 6px; }
   .seg { padding: 8px 4px; font-size: 12px; gap: 4px; }
 }
+
+/* ---------- Cross-state ---------- */
+.badges { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.badge.cross-state { background: rgba(59,130,246,0.14); color: #93bbfb; border: 1px solid rgba(59,130,246,0.35); }
+.new-project-form .state-input { flex: 0 0 64px; text-transform: uppercase; }

@@ -84,6 +84,7 @@ class ProjectIn(BaseModel):
     end_date: date
     description: str = ""
     estimated_cost: float | None = Field(default=None, ge=0)
+    state: str | None = Field(default=None, pattern=r"^[A-Za-z]{2}$")
     requires_outage: bool = False
     outage_start: date | None = None
     outage_end: date | None = None
@@ -141,7 +142,10 @@ def get_db_connection():
     return conn
 
 
-DEPENDENCY_COLUMNS = {
+# Columns added after the original schema. Existing app.db files are
+# migrated in place and CSVs that lack a column get NULLs.
+ADDED_COLUMNS = {
+    "state": "TEXT",
     "requires_outage": "INTEGER NOT NULL DEFAULT 0",
     "outage_start": "TEXT",
     "outage_end": "TEXT",
@@ -150,7 +154,7 @@ DEPENDENCY_COLUMNS = {
     "road_closure_end": "TEXT",
 }
 PROJECT_COLUMNS = ["project_id", "utility", "name", "lat", "lon", "start_date",
-                   "end_date", "description", "estimated_cost", *DEPENDENCY_COLUMNS]
+                   "end_date", "description", "estimated_cost", *ADDED_COLUMNS]
 
 
 # IDs of projects that come from the seed CSVs. These are re-imported on
@@ -177,7 +181,7 @@ def init_db():
     # Add columns introduced after the table was first created, so existing
     # app.db files keep working.
     existing = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
-    for column, sql_type in DEPENDENCY_COLUMNS.items():
+    for column, sql_type in ADDED_COLUMNS.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {sql_type}")
     conn.commit()
@@ -190,7 +194,7 @@ def init_db():
     SEED_PROJECT_IDS.clear()
     for csv_path in sorted(DATA_DIR.glob("*_projects.csv")):
         df = pd.read_csv(csv_path)
-        for column in DEPENDENCY_COLUMNS:
+        for column in ADDED_COLUMNS:
             if column not in df:
                 df[column] = None
         df["requires_outage"] = df["requires_outage"].fillna(False).astype(bool).astype(int)
@@ -308,6 +312,7 @@ def find_overlaps(
                 "project_a": project_summary(a),
                 "project_b": project_summary(b),
                 "distance_miles": round(distance, 1),
+                "cross_state": is_cross_state(a, b),
                 "spatial_conflict": spatial_conflict,
                 "temporal_conflict": temporal_conflict,
                 "severity": severity,
@@ -341,10 +346,17 @@ def window_overlap(start1, end1, start2, end2):
 def project_summary(p) -> dict:
     return {
         "id": p["project_id"], "utility": p["utility"], "name": p["name"],
+        "state": None if is_missing(p["state"]) else p["state"],
         "lat": p["lat"], "lon": p["lon"],
         "start_date": str(p["start_date"].date()),
         "end_date": str(p["end_date"].date()),
     }
+
+
+def is_cross_state(a, b) -> bool:
+    """True when both projects have a known state and the states differ."""
+    sa, sb = a["state"], b["state"]
+    return not is_missing(sa) and not is_missing(sb) and sa != sb
 
 
 def find_risks(
@@ -388,6 +400,7 @@ def find_risks(
                     "project_a": project_summary(a),
                     "project_b": project_summary(b),
                     "distance_miles": round(distance, 1),
+                "cross_state": is_cross_state(a, b),
                     "start_date": str(start.date()),
                     "end_date": str(end.date()),
                     "days": (end - start).days + 1,
@@ -454,15 +467,13 @@ def get_default_thresholds():
 def create_project(project: ProjectIn):
     conn = get_db_connection()
     try:
-        iso = lambda d: d.isoformat() if d else None
+        row = project.model_dump(mode="json")
+        row["requires_outage"] = int(project.requires_outage)
+        row["state"] = project.state.upper() if project.state else None
         conn.execute(
             f"INSERT INTO projects ({', '.join(PROJECT_COLUMNS)}) "
             f"VALUES ({', '.join('?' * len(PROJECT_COLUMNS))})",
-            (project.project_id, project.utility, project.name, project.lat, project.lon,
-             iso(project.start_date), iso(project.end_date),
-             project.description, project.estimated_cost,
-             int(project.requires_outage), iso(project.outage_start), iso(project.outage_end),
-             project.road_affected, iso(project.road_closure_start), iso(project.road_closure_end))
+            [row[c] for c in PROJECT_COLUMNS],
         )
         conn.commit()
     except sqlite3.IntegrityError:

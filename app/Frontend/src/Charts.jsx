@@ -387,6 +387,10 @@ export default function Insights({ projects, overlaps, risks, conflictIndex, onS
           <div className="stat-label">Flagged pairs</div>
         </div>
         <div className="stat">
+          <div className="stat-value">{overlaps.filter((o) => o.cross_state).length}</div>
+          <div className="stat-label">⇄ Cross-state pairs</div>
+        </div>
+        <div className="stat">
           <div className="stat-value">{risks.length}</div>
           <div className="stat-label">⚡🚧 Dependency risks</div>
         </div>
