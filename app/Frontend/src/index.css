@@ -1,9 +1,11 @@
 :root {
-  --fpl-color: #0057b8;
-  --def-color: #e8702a;
-  --high: #d1233d;
-  --med-spatial: #e8702a;
-  --med-temporal: #c99a06;
+  /* Validated for color-vision deficiency on --panel; keep in sync with utils.js */
+  --fpl-color: #3b82f6;
+  --def-color: #d9661f;
+  --high: #e5484d;
+  --med-spatial: #8b6fe0;
+  --med-temporal: #c98208;
+  --clear: #2e9e6f;
   --bg: #0f1420;
   --panel: #161d2e;
   --border: #26304a;
