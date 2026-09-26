@@ -583,7 +583,7 @@ export default function App() {
   return (
     <div className="app">
       <header>
-        <h1>GridLock</h1>
+        <h1>Grid</h1>
         <span className="subtitle">Cross-utility construction conflict detector</span>
         <nav className="tabs" role="tablist">
           {TABS.map((t) => (
@@ -604,7 +604,7 @@ export default function App() {
       <div className="ferc-banner">
         Utilities have historically planned construction in isolation, leading to waste
         and delays. FERC Order 1920 (2024) now requires regional transmission planners to
-        coordinate — GridLock is a visibility layer for exactly that.
+        coordinate — Grid is a visibility layer for exactly that.
       </div>
 
       <div className="controls">

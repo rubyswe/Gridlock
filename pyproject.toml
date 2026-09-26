@@ -1,5 +1,5 @@
 [project]
-name = "gridlock"
+name = "grid"
 version = "0.1.0"
 description = "Cross-utility construction conflict detector"
 readme = "README.md"

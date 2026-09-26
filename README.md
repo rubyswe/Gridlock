@@ -1,4 +1,4 @@
-# GridLock
+# Grid
 
 Cross-utility construction conflict detector. Flags FPL and Duke Energy Florida
 projects that overlap in location and/or time, and shows them on a map, as
@@ -41,7 +41,7 @@ restart. Projects added through the UI are kept.
 
 ## Dependency risks
 
-Beyond "same place, same time", GridLock flags cases where one utility's work
+Beyond "same place, same time", Grid flags cases where one utility's work
 affects the other's:
 
 - **⚡ Stacked outage**: both utilities take equipment out of service within

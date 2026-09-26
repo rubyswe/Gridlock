@@ -1,5 +1,5 @@
 """
-GridLock — utility construction plan overlap detector.
+Grid — utility construction plan overlap detector.
 
 Endpoints:
   GET /projects              -> all projects from all loaded utilities
@@ -121,7 +121,7 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="GridLock API", lifespan=lifespan)
+app = FastAPI(title="Grid API", lifespan=lifespan)
 
 # Allow the frontend (served separately, e.g. from file:// or another port)
 # to call this API during the demo without CORS headaches.
