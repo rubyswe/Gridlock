@@ -1,0 +1,83 @@
+.app {
+  min-height: 100%;
+}
+
+header {
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+header h1 { font-size: 18px; margin: 0; }
+.subtitle { color: var(--text-dim); font-size: 13px; }
+.status { margin-left: auto; font-size: 12px; color: var(--text-dim); }
+.status.error { color: var(--high); }
+
+.layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  padding: 16px 24px 32px;
+}
+@media (min-width: 900px) {
+  .layout { grid-template-columns: 1.1fr 1fr; align-items: start; }
+}
+
+.map {
+  border-radius: 10px;
+  border: 1px solid var(--border);
+}
+.map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.9) contrast(0.9) saturate(0.6);
+}
+
+.legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 10px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+}
+.panel h2 { font-size: 14px; margin: 0 0 4px; }
+.count { color: var(--text-dim); font-size: 12px; margin-bottom: 12px; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--text-dim); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.03em; }
+tr.conflict-row { cursor: pointer; }
+tr.conflict-row:hover { background: rgba(255,255,255,0.03); }
+tr.selected { background: rgba(232,112,42,0.12); }
+
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.badge.high { background: rgba(209,35,61,0.18); color: var(--high); }
+.badge.medium-spatial { background: rgba(232,112,42,0.18); color: var(--med-spatial); }
+.badge.medium-temporal { background: rgba(201,154,6,0.18); color: var(--med-temporal); }
+
+.proj-name { font-weight: 600; }
+.proj-util { color: var(--text-dim); font-size: 11px; }
+
+.empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 20px 0;
+  text-align: center;
+}

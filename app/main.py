@@ -15,6 +15,29 @@ import pandas as pd
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import sqlite3
+from pydantic import BaseModel
+
+DB_path = Path(__file__).parent / "app.db"
+
+def get_db_connection():
+    conn = sqlite3.connect(DB_path)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+class ProjectIn(BaseModel):
+    project_id: str
+    utility: str
+    name: str
+    lat: float
+    lon: float
+    start_date: str
+    end_date: str
+    description: str = ""
+    estimated_cost: float | None = None
+
+
 app = FastAPI(title="GridLock API")
 
 # Allow the frontend (served separately, e.g. from file:// or another port)
@@ -29,27 +52,58 @@ app.add_middleware(
 DATA_DIR = Path(__file__).parent / "data"
 
 # Distance threshold in miles: projects closer than this are a "spatial" conflict
-DISTANCE_THRESHOLD_MILES = 15
+DISTANCE_THRESHOLD_MILES = 8
 
 # Date buffer in days: projects whose windows are within this many days of
 # each other (including direct overlap) are a "temporal" conflict
-DATE_BUFFER_DAYS = 90
+DATE_BUFFER_DAYS = 45
 
+# Even a "temporal-only" conflict (same timeframe, not close) only matters if
+# the two projects are within the same general region — two projects 200+
+# miles apart aren't competing for the same crews/equipment no matter how
+# well their dates line up. This caps how far apart a temporal-only flag
+# can be before we consider it noise rather than a real regional conflict.
+MAX_REGIONAL_MILES = 60
+
+
+def init_db():
+    conn = get_db_connection()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            project_id TEXT PRIMARY KEY,
+            utility TEXT NOT NULL,
+            name TEXT NOT NULL,
+            lat REAL NOT NULL,
+            lon REAL NOT NULL,
+            start_date TEXT NOT NULL,
+            end_date TEXT NOT NULL,
+            description TEXT,
+            estimated_cost REAL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+
+    # only import CSVs if table is empty, so re-running doesn't duplicate data
+    count = conn.execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+    if count == 0:
+        for csv_path in DATA_DIR.glob("*_projects.csv"):
+            df = pd.read_csv(csv_path)
+            df.to_sql("projects", conn, if_exists="append", index=False)
+    conn.close()
+
+@app.on_event("startup")
+def startup():
+    init_db()
 
 def load_projects() -> pd.DataFrame:
-    """Load every *_projects.csv in the data directory into one dataframe."""
-    frames = []
-    for csv_path in DATA_DIR.glob("*_projects.csv"):
-        df = pd.read_csv(csv_path, parse_dates=["start_date", "end_date"])
-        frames.append(df)
-    if not frames:
-        return pd.DataFrame(
-            columns=[
-                "project_id", "utility", "name", "lat", "lon",
-                "start_date", "end_date", "description",
-            ]
-        )
-    return pd.concat(frames, ignore_index=True)
+    conn = get_db_connection()
+    df = pd.read_sql_query("SELECT * FROM projects", conn)
+    conn.close()
+    df["start_date"] = pd.to_datetime(df["start_date"])
+    df["end_date"] = pd.to_datetime(df["end_date"])
+    return df
+
 
 
 def haversine_miles(lat1, lon1, lat2, lon2) -> float:
@@ -87,6 +141,12 @@ def find_overlaps(df: pd.DataFrame) -> list[dict]:
             temporal_conflict = dates_overlap(
                 a["start_date"], a["end_date"], b["start_date"], b["end_date"]
             )
+
+            # A pure temporal match only counts if the projects are at least
+            # in the same broad region — otherwise same-year-but-500-miles-
+            # apart pairs would flood the results with meaningless noise.
+            if not spatial_conflict and distance > MAX_REGIONAL_MILES:
+                continue
 
             if not (spatial_conflict or temporal_conflict):
                 continue
@@ -145,3 +205,20 @@ def get_overlaps():
         return {"count": 0, "overlaps": []}
     overlaps = find_overlaps(df)
     return {"count": len(overlaps), "overlaps": overlaps}
+
+@app.post("/projects")
+def create_project(project: ProjectIn):
+    conn = get_db_connection()
+    conn.execute(
+        """INSERT INTO projects
+           (project_id, utility, name, lat, lon, start_date, end_date, description, estimated_cost)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (project.project_id, project.utility, project.name, project.lat, project.lon,
+         project.start_date, project.end_date, project.description, project.estimated_cost)
+    )
+    conn.commit()
+    conn.close()
+    return {"message": "Project added", "project_id": project.project_id}
+
+
+    
