@@ -78,3 +78,30 @@ export function buildConflictIndex(overlaps) {
   }
   return index
 }
+
+// Per-viewer preferences (filters, thresholds). Storage can be unavailable
+// (private mode, blocked site data), so every access is guarded.
+export function loadPref(key, fallback) {
+  try {
+    const raw = localStorage.getItem(`gridlock:${key}`)
+    return raw ? { ...fallback, ...JSON.parse(raw) } : fallback
+  } catch {
+    return fallback
+  }
+}
+
+export function savePref(key, value) {
+  try {
+    localStorage.setItem(`gridlock:${key}`, JSON.stringify(value))
+  } catch {
+    // ignore — preferences just won't persist
+  }
+}
+
+/** True if the project matches the utility filter and is active at some point in [from, to]. */
+export function projectInScope(p, filters) {
+  if (filters.utilities.length && !filters.utilities.includes(p.utility)) return false
+  if (filters.from && p.end_date < filters.from) return false
+  if (filters.to && p.start_date > filters.to) return false
+  return true
+}

@@ -1,7 +1,8 @@
-import { useEffect, useState, useCallback, useMemo } from 'react'
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
 import { MapContainer, TileLayer, CircleMarker, Polyline, Popup, useMap } from 'react-leaflet'
 import Insights from './Charts'
 import CalendarView from './CalendarView'
+import { DetectionSettings, EMPTY_FILTERS, FilterBar } from './Controls'
 import {
   API_BASE,
   CLEAR_COLOR,
@@ -10,7 +11,10 @@ import {
   buildConflictIndex,
   formatDate,
   formatMoney,
+  loadPref,
   overlapKey,
+  projectInScope,
+  savePref,
   severityColor,
   utilityColor,
 } from './utils'
@@ -81,7 +85,23 @@ function ExplainButton({ overlap }) {
   )
 }
 
-function ConflictRow({ overlap, isSelected, onSelect }) {
+function DeleteButton({ project, onDelete, label = 'Delete' }) {
+  if (!project || project.is_seed !== false) return null
+  return (
+    <button
+      className="delete-btn"
+      title={`Delete ${project.name}`}
+      onClick={(e) => {
+        e.stopPropagation()
+        onDelete(project)
+      }}
+    >
+      {label}
+    </button>
+  )
+}
+
+function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) {
   const savings = formatMoney(overlap.potential_savings)
   const relocation = formatMoney(overlap.relocation_savings)
 
@@ -101,6 +121,7 @@ function ConflictRow({ overlap, isSelected, onSelect }) {
               {p.utility} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
             </div>
           </div>
+          <DeleteButton project={projectsById.get(p.id)} onDelete={onDelete} label="×" />
         </div>
       ))}
 
@@ -124,7 +145,7 @@ function ConflictRow({ overlap, isSelected, onSelect }) {
   )
 }
 
-function ClearRow({ project, nearest, isSelected, onSelect }) {
+function ClearRow({ project, nearest, isSelected, onSelect, onDelete }) {
   return (
     <li className={`list-row${isSelected ? ' selected' : ''}`} onClick={() => onSelect(project)}>
       <div className="row-top">
@@ -139,6 +160,7 @@ function ClearRow({ project, nearest, isSelected, onSelect }) {
             {project.utility} · {formatDate(project.start_date)} → {formatDate(project.end_date)}
           </div>
         </div>
+        <DeleteButton project={project} onDelete={onDelete} label="×" />
       </div>
       {nearest && (
         <div className="clear-reason">
@@ -248,6 +270,39 @@ function NewProjectForm({ onCreated }) {
   )
 }
 
+function HypotheticalList({ projects, conflictIndex, onDelete, onSelect }) {
+  if (projects.length === 0) return null
+  return (
+    <div className="hypo-list">
+      <h3>Your hypothetical projects ({projects.length})</h3>
+      <ul>
+        {projects.map((p) => {
+          const entry = conflictIndex.get(p.project_id)
+          return (
+            <li key={p.project_id} onClick={() => onSelect(p)}>
+              <span className="dot" style={{ background: utilityColor(p.utility) }} />
+              <div className="hypo-main">
+                <div className="proj-name">{p.name}</div>
+                <div className="proj-util">
+                  {p.project_id} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
+                </div>
+              </div>
+              {entry ? (
+                <span className={`badge ${entry.worst}`}>
+                  {entry.overlaps.length} conflict{entry.overlaps.length === 1 ? '' : 's'}
+                </span>
+              ) : (
+                <span className="badge clear">✓ Clear</span>
+              )}
+              <DeleteButton project={p} onDelete={onDelete} />
+            </li>
+          )
+        })}
+      </ul>
+    </div>
+  )
+}
+
 const TABS = [
   { id: 'map', label: 'Map' },
   { id: 'insights', label: 'Insights' },
@@ -262,17 +317,45 @@ export default function App() {
   const [selectedKey, setSelectedKey] = useState(null)
   const [focusId, setFocusId] = useState(null)
   const [status, setStatus] = useState({ text: 'Connecting to API…', error: false })
+  const [loading, setLoading] = useState(false)
+  const [filters, setFilters] = useState(() => loadPref('filters', EMPTY_FILTERS))
+  const [defaults, setDefaults] = useState(null)
+  const [thresholds, setThresholds] = useState(() => loadPref('thresholds', null))
+  const requestId = useRef(0)
+
+  useEffect(() => savePref('filters', filters), [filters])
+  useEffect(() => {
+    if (thresholds) savePref('thresholds', thresholds)
+  }, [thresholds])
+
+  // Default thresholds come from the backend so there's one source of truth.
+  useEffect(() => {
+    fetch(`${API_BASE}/settings/defaults`)
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((d) => {
+        setDefaults(d)
+        setThresholds((t) => t || d)
+      })
+      .catch(() => setStatus({ text: `Could not reach API at ${API_BASE} — is the backend running?`, error: true }))
+  }, [])
 
   const loadData = useCallback(async () => {
+    if (!thresholds) return
+    // Ignore responses that arrive after a newer request was sent (e.g. while
+    // dragging a threshold slider).
+    const id = ++requestId.current
+    setLoading(true)
     try {
+      const params = new URLSearchParams(Object.entries(thresholds).map(([k, v]) => [k, String(v)]))
       const [projectsRes, overlapsRes] = await Promise.all([
         fetch(`${API_BASE}/projects`),
-        fetch(`${API_BASE}/overlaps`),
+        fetch(`${API_BASE}/overlaps?${params}`),
       ])
       if (!projectsRes.ok || !overlapsRes.ok) throw new Error('API returned an error')
 
       const projectsData = await projectsRes.json()
       const overlapsData = await overlapsRes.json()
+      if (id !== requestId.current) return
 
       setProjects(projectsData)
       setOverlaps(overlapsData.overlaps)
@@ -281,24 +364,60 @@ export default function App() {
         error: false,
       })
     } catch {
+      if (id !== requestId.current) return
       setStatus({
         text: `Could not reach API at ${API_BASE} — is the backend running?`,
         error: true,
       })
+    } finally {
+      if (id === requestId.current) setLoading(false)
     }
-  }, [])
+  }, [thresholds])
 
+  // Debounced so dragging a slider doesn't fire a request per pixel.
   useEffect(() => {
-    loadData()
+    const t = setTimeout(loadData, 250)
+    return () => clearTimeout(t)
   }, [loadData])
 
+  const deleteProject = async (p) => {
+    if (!window.confirm(`Delete "${p.name}" (${p.project_id})? This can't be undone.`)) return
+    try {
+      const res = await fetch(`${API_BASE}/projects/${encodeURIComponent(p.project_id)}`, { method: 'DELETE' })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail || 'Delete failed')
+      }
+      if (focusId === p.project_id) setFocusId(null)
+      setSelectedKey((k) => (k && k.split('|').includes(p.project_id) ? null : k))
+      loadData()
+    } catch (err) {
+      window.alert(err.message === 'Failed to fetch' ? 'Could not reach the API.' : err.message)
+    }
+  }
+
+  // Conflict status is always computed from ALL overlaps, so filtering the
+  // view never turns a conflicted project into a "clear" one.
   const conflictIndex = useMemo(() => buildConflictIndex(overlaps), [overlaps])
+  const projectsById = useMemo(() => new Map(projects.map((p) => [p.project_id, p])), [projects])
+  const utilities = useMemo(() => [...new Set(projects.map((p) => p.utility))].sort(), [projects])
+
+  const scopedProjects = useMemo(() => projects.filter((p) => projectInScope(p, filters)), [projects, filters])
+  const scopedOverlaps = useMemo(() => {
+    const ids = new Set(scopedProjects.map((p) => p.project_id))
+    return overlaps.filter((o) => ids.has(o.project_a.id) || ids.has(o.project_b.id))
+  }, [overlaps, scopedProjects])
+  const scopedConflictCount = useMemo(
+    () => scopedProjects.filter((p) => conflictIndex.has(p.project_id)).length,
+    [scopedProjects, conflictIndex],
+  )
+  const hypotheticals = useMemo(() => projects.filter((p) => p.is_seed === false), [projects])
 
   // Conflict-free projects, each with the nearest project from another
   // utility so the user can see *why* it's clear.
   const clearProjects = useMemo(
     () =>
-      projects
+      scopedProjects
         .filter((p) => !conflictIndex.has(p.project_id))
         .map((p) => {
           let nearest = null
@@ -310,7 +429,7 @@ export default function App() {
           return { project: p, nearest }
         })
         .sort((a, b) => a.project.start_date.localeCompare(b.project.start_date)),
-    [projects, conflictIndex],
+    [projects, scopedProjects, conflictIndex],
   )
 
   const selected = overlaps.find((o) => overlapKey(o) === selectedKey) || null
@@ -362,6 +481,19 @@ export default function App() {
         coordinate — GridLock is a visibility layer for exactly that.
       </div>
 
+      <div className="controls">
+        <FilterBar
+          utilities={utilities}
+          filters={filters}
+          onChange={setFilters}
+          shownCount={scopedProjects.length}
+          totalCount={projects.length}
+        />
+        {thresholds && (
+          <DetectionSettings thresholds={thresholds} defaults={defaults} onChange={setThresholds} loading={loading} />
+        )}
+      </div>
+
       {status.error && (
         <div className="api-error">
           Start the FastAPI backend from the <code>app</code> folder (<code>uvicorn main:app --reload</code>) then refresh this page.
@@ -378,7 +510,7 @@ export default function App() {
                 maxZoom={19}
               />
 
-              {projects.map((p) => {
+              {scopedProjects.map((p) => {
                 const entry = conflictIndex.get(p.project_id)
                 const inView = view === 'conflicts' ? Boolean(entry) : !entry
                 const ring = entry ? severityColor(entry.worst) : CLEAR_COLOR
@@ -415,6 +547,11 @@ export default function App() {
                         </span>
                       ) : (
                         <span style={{ color: CLEAR_COLOR }}>✓ No conflicts</span>
+                      )}
+                      {p.is_seed === false && (
+                        <div className="popup-actions">
+                          <DeleteButton project={p} onDelete={deleteProject} label="Delete project" />
+                        </div>
                       )}
                     </Popup>
                   </CircleMarker>
@@ -461,6 +598,12 @@ export default function App() {
             </div>
 
             <NewProjectForm onCreated={loadData} />
+            <HypotheticalList
+              projects={hypotheticals}
+              conflictIndex={conflictIndex}
+              onDelete={deleteProject}
+              onSelect={selectProject}
+            />
           </div>
 
           <div className="panel">
@@ -471,7 +614,7 @@ export default function App() {
                 className={`seg conflicts${view === 'conflicts' ? ' active' : ''}`}
                 onClick={() => switchView('conflicts')}
               >
-                ⚠ Conflicts <span className="seg-count">{overlaps.length}</span>
+                ⚠ Conflicts <span className="seg-count">{scopedOverlaps.length}</span>
               </button>
               <button
                 role="tab"
@@ -486,24 +629,28 @@ export default function App() {
             {view === 'conflicts' ? (
               <>
                 <div className="count">
-                  {overlaps.length === 0
+                  {scopedOverlaps.length === 0
                     ? status.error
                       ? ''
                       : 'No conflicts found'
-                    : `${overlaps.length} flagged pair${overlaps.length === 1 ? '' : 's'} involving ${conflictIndex.size} projects`}
+                    : `${scopedOverlaps.length} flagged pair${scopedOverlaps.length === 1 ? '' : 's'} involving ${scopedConflictCount} shown project${scopedConflictCount === 1 ? '' : 's'}`}
                 </div>
-                {overlaps.length === 0 ? (
+                {scopedOverlaps.length === 0 ? (
                   <div className="empty">
-                    {status.error ? 'Waiting for the API…' : 'No overlapping projects detected with current thresholds.'}
+                    {status.error
+                      ? 'Waiting for the API…'
+                      : 'No overlapping projects detected with the current filters and thresholds.'}
                   </div>
                 ) : (
                   <ul className="list">
-                    {overlaps.map((o) => (
+                    {scopedOverlaps.map((o) => (
                       <ConflictRow
                         key={overlapKey(o)}
                         overlap={o}
                         isSelected={selectedKey === overlapKey(o)}
                         onSelect={selectConflict}
+                        projectsById={projectsById}
+                        onDelete={deleteProject}
                       />
                     ))}
                   </ul>
@@ -516,7 +663,7 @@ export default function App() {
                   conflicts
                 </div>
                 {clearProjects.length === 0 ? (
-                  <div className="empty">{status.error ? 'Waiting for the API…' : 'Every project has at least one conflict.'}</div>
+                  <div className="empty">{status.error ? 'Waiting for the API…' : 'No conflict-free projects match the current filters.'}</div>
                 ) : (
                   <ul className="list">
                     {clearProjects.map(({ project, nearest }) => (
@@ -526,6 +673,7 @@ export default function App() {
                         nearest={nearest}
                         isSelected={focusId === project.project_id}
                         onSelect={selectProject}
+                        onDelete={deleteProject}
                       />
                     ))}
                   </ul>
@@ -538,15 +686,15 @@ export default function App() {
 
       {tab === 'insights' && (
         <div className="page">
-          <Insights projects={projects} overlaps={overlaps} conflictIndex={conflictIndex} />
+          <Insights projects={scopedProjects} overlaps={scopedOverlaps} conflictIndex={conflictIndex} />
         </div>
       )}
 
       {tab === 'calendar' && (
         <div className="page">
           <CalendarView
-            projects={projects}
-            overlaps={overlaps}
+            projects={scopedProjects}
+            overlaps={scopedOverlaps}
             conflictIndex={conflictIndex}
             onShowConflict={showConflictOnMap}
           />

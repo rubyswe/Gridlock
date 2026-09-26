@@ -4,9 +4,11 @@ GridLock — utility construction plan overlap detector.
 Endpoints:
   GET /projects              -> all projects from all loaded utilities
   GET /overlaps               -> flagged conflicting project pairs
+                                 (thresholds adjustable via query params)
   GET /health                 -> simple healthcheck
+  GET /settings/defaults      -> default conflict-detection thresholds
   POST /projects              -> add a new project (persisted to SQLite)
-  DELETE /projects/{id}       -> remove a project
+  DELETE /projects/{id}       -> remove a user-added project
   POST /overlaps/explain      -> AI-generated plain-English explanation of a conflict
 """
 
@@ -20,7 +22,7 @@ from pathlib import Path
 
 import pandas as pd
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, model_validator
 
@@ -105,6 +107,11 @@ def get_db_connection():
     return conn
 
 
+# IDs of projects that come from the seed CSVs. These are re-imported on
+# every startup, so deleting one through the API would be pointless.
+SEED_PROJECT_IDS: set[str] = set()
+
+
 def init_db():
     conn = get_db_connection()
     conn.execute("""
@@ -129,9 +136,11 @@ def init_db():
     # through the API untouched.
     columns = ["project_id", "utility", "name", "lat", "lon", "start_date",
                "end_date", "description", "estimated_cost"]
+    SEED_PROJECT_IDS.clear()
     for csv_path in sorted(DATA_DIR.glob("*_projects.csv")):
         df = pd.read_csv(csv_path)
         df = df.astype(object).where(pd.notna(df), None)
+        SEED_PROJECT_IDS.update(df["project_id"])
         conn.executemany(
             f"INSERT OR REPLACE INTO projects ({', '.join(columns)}) "
             f"VALUES ({', '.join('?' * len(columns))})",
@@ -181,7 +190,12 @@ def dates_overlap(start1, end1, start2, end2, buffer_days=DATE_BUFFER_DAYS) -> b
     return start1 <= end2 + buffer and start2 <= end1 + buffer
 
 
-def find_overlaps(df: pd.DataFrame) -> list[dict]:
+def find_overlaps(
+    df: pd.DataFrame,
+    distance_threshold=DISTANCE_THRESHOLD_MILES,
+    date_buffer_days=DATE_BUFFER_DAYS,
+    max_regional_miles=MAX_REGIONAL_MILES,
+) -> list[dict]:
     """
     Compare every project pair from DIFFERENT utilities and flag conflicts.
     Returns a list of dicts, one per flagged pair, ready for JSON.
@@ -198,15 +212,16 @@ def find_overlaps(df: pd.DataFrame) -> list[dict]:
                 continue
 
             distance = haversine_miles(a["lat"], a["lon"], b["lat"], b["lon"])
-            spatial_conflict = distance <= DISTANCE_THRESHOLD_MILES
+            spatial_conflict = distance <= distance_threshold
             temporal_conflict = dates_overlap(
-                a["start_date"], a["end_date"], b["start_date"], b["end_date"]
+                a["start_date"], a["end_date"], b["start_date"], b["end_date"],
+                buffer_days=date_buffer_days,
             )
 
             # A pure temporal match only counts if the projects are at least
             # in the same broad region — otherwise same-year-but-500-miles-
             # apart pairs would flood the results with meaningless noise.
-            if not spatial_conflict and distance > MAX_REGIONAL_MILES:
+            if not spatial_conflict and distance > max_regional_miles:
                 continue
 
             if not (spatial_conflict or temporal_conflict):
@@ -273,16 +288,35 @@ def get_projects():
         start_date=df["start_date"].dt.strftime("%Y-%m-%d"),
         end_date=df["end_date"].dt.strftime("%Y-%m-%d"),
     )
+    df["is_seed"] = df["project_id"].isin(SEED_PROJECT_IDS)
     return clean_nan(df.to_dict("records"))
 
 
 @app.get("/overlaps")
-def get_overlaps():
+def get_overlaps(
+    distance_miles: float = Query(DISTANCE_THRESHOLD_MILES, ge=0, le=500),
+    date_buffer_days: int = Query(DATE_BUFFER_DAYS, ge=0, le=3650),
+    max_regional_miles: float = Query(MAX_REGIONAL_MILES, ge=0, le=1000),
+):
+    thresholds = {
+        "distance_miles": distance_miles,
+        "date_buffer_days": date_buffer_days,
+        "max_regional_miles": max_regional_miles,
+    }
     df = load_projects()
     if df.empty:
-        return {"count": 0, "overlaps": []}
-    overlaps = find_overlaps(df)
-    return {"count": len(overlaps), "overlaps": overlaps}
+        return {"count": 0, "overlaps": [], "thresholds": thresholds}
+    overlaps = find_overlaps(df, distance_miles, date_buffer_days, max_regional_miles)
+    return {"count": len(overlaps), "overlaps": overlaps, "thresholds": thresholds}
+
+
+@app.get("/settings/defaults")
+def get_default_thresholds():
+    return {
+        "distance_miles": DISTANCE_THRESHOLD_MILES,
+        "date_buffer_days": DATE_BUFFER_DAYS,
+        "max_regional_miles": MAX_REGIONAL_MILES,
+    }
 
 
 @app.post("/projects", status_code=201)
@@ -307,6 +341,10 @@ def create_project(project: ProjectIn):
 
 @app.delete("/projects/{project_id}")
 def delete_project(project_id: str):
+    if project_id in SEED_PROJECT_IDS:
+        raise HTTPException(
+            400, "Seed projects come from app/data/*.csv and are re-imported on startup; edit the CSV instead"
+        )
     conn = get_db_connection()
     cur = conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
     conn.commit()

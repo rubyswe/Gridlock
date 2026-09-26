@@ -490,3 +490,152 @@ header h1 { font-size: 18px; margin: 0; }
   .tabs { margin-left: 0; }
   .hbar-row { grid-template-columns: 100px 1fr 28px; }
 }
+
+/* ---------- Filters & detection settings ---------- */
+.controls {
+  margin: 12px 24px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 24px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 13px;
+}
+.filter-group { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.filter-end { margin-left: auto; }
+.filter-label { color: var(--text-dim); font-size: 12px; margin-right: 2px; }
+.filter-sep { color: var(--text-dim); }
+.filter-count { color: var(--text-dim); font-size: 12px; }
+.filter-warn { color: #ff8a8d; font-size: 12px; }
+.filter-bar input[type="date"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  color-scheme: dark;
+}
+.chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.chip-btn:hover { color: var(--text); border-color: var(--text-dim); }
+.chip-btn.active { color: var(--text); border-color: var(--text); background: rgba(255,255,255,0.06); }
+.link-btn {
+  background: none;
+  border: none;
+  color: var(--fpl-color);
+  cursor: pointer;
+  font-size: 12.5px;
+  padding: 4px 0;
+}
+.link-btn:hover:not(:disabled) { text-decoration: underline; }
+.link-btn:disabled { color: var(--text-dim); cursor: default; opacity: 0.6; }
+
+.settings {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.settings-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 10px 14px;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.settings-summary { color: var(--text-dim); font-size: 12px; }
+.settings-loading { color: var(--text-dim); font-size: 12px; font-style: italic; }
+.settings-caret { margin-left: auto; color: var(--text-dim); }
+.badge.custom { background: rgba(59,130,246,0.2); color: #93bbfb; }
+.settings-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px 24px;
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+}
+.slider-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; }
+.slider-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+.slider-value { display: inline-flex; align-items: center; gap: 4px; color: var(--text-dim); font-size: 12px; }
+.slider-value input {
+  width: 64px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12.5px;
+  text-align: right;
+}
+.slider-field input[type="range"] { width: 100%; accent-color: var(--fpl-color); }
+.slider-help { color: var(--text-dim); font-size: 11.5px; line-height: 1.4; }
+.settings-actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; }
+
+/* ---------- Delete & hypothetical projects ---------- */
+.delete-btn {
+  margin-left: auto;
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 6px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.delete-btn:hover { border-color: var(--high); color: #ff8a8d; }
+.popup-actions { margin-top: 8px; }
+.popup-actions .delete-btn { margin-left: 0; }
+
+.hypo-list {
+  margin-top: 12px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.hypo-list h3 { margin: 0 0 8px; font-size: 13px; }
+.hypo-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.hypo-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+  font-size: 13px;
+  cursor: pointer;
+}
+.hypo-list li:first-child { border-top: none; }
+.hypo-list .hypo-main { flex: 1; min-width: 0; }
+.hypo-list .delete-btn { margin-left: 0; }
+
+@media (max-width: 600px) {
+  .controls { margin-left: 16px; margin-right: 16px; }
+  .filter-end { margin-left: 0; }
+}
