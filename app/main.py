@@ -3,8 +3,10 @@ GridLock — utility construction plan overlap detector.
 
 Endpoints:
   GET /projects              -> all projects from all loaded utilities
-  GET /overlaps               -> flagged conflicting project pairs
-                                 (thresholds adjustable via query params)
+  GET /overlaps               -> flagged conflicting project pairs, plus
+                                 dependency risks (stacked outages, shared
+                                 road closures); thresholds adjustable via
+                                 query params
   GET /health                 -> simple healthcheck
   GET /settings/defaults      -> default conflict-detection thresholds
   POST /projects              -> add a new project (persisted to SQLite)
@@ -62,6 +64,15 @@ DATE_BUFFER_DAYS = 45
 # can be before we consider it noise rather than a real regional conflict.
 MAX_REGIONAL_MILES = 60
 
+# Dependency risks. Two utilities taking equipment out of service within this
+# distance at the same time weakens the local grid — if something else fails
+# during that window there's less redundancy to keep customers powered.
+OUTAGE_RADIUS_MILES = 25
+
+# Road closures are matched by road name, but the same highway (e.g. US-1)
+# runs the length of the state, so closures only count as shared if the
+# projects are within the regional radius (MAX_REGIONAL_MILES) of each other.
+
 
 class ProjectIn(BaseModel):
     project_id: str = Field(min_length=1)
@@ -73,12 +84,35 @@ class ProjectIn(BaseModel):
     end_date: date
     description: str = ""
     estimated_cost: float | None = Field(default=None, ge=0)
+    requires_outage: bool = False
+    outage_start: date | None = None
+    outage_end: date | None = None
+    road_affected: str | None = None
+    road_closure_start: date | None = None
+    road_closure_end: date | None = None
 
     @model_validator(mode="after")
     def check_dates(self):
         if self.end_date < self.start_date:
             raise ValueError("end_date must be on or after start_date")
+        self._check_window("outage", self.outage_start, self.outage_end, self.requires_outage)
+        if self.road_affected is not None and not self.road_affected.strip():
+            self.road_affected = None
+        self._check_window("road closure", self.road_closure_start, self.road_closure_end,
+                           self.road_affected is not None)
         return self
+
+    def _check_window(self, label, start, end, required):
+        if not required:
+            if start or end:
+                raise ValueError(f"{label} dates given but no {label} is set")
+            return
+        if not (start and end):
+            raise ValueError(f"{label} start and end dates are required")
+        if end < start:
+            raise ValueError(f"{label} end must be on or after its start")
+        if start < self.start_date or end > self.end_date:
+            raise ValueError(f"{label} window must fall within the project dates")
 
 
 @asynccontextmanager
@@ -107,6 +141,18 @@ def get_db_connection():
     return conn
 
 
+DEPENDENCY_COLUMNS = {
+    "requires_outage": "INTEGER NOT NULL DEFAULT 0",
+    "outage_start": "TEXT",
+    "outage_end": "TEXT",
+    "road_affected": "TEXT",
+    "road_closure_start": "TEXT",
+    "road_closure_end": "TEXT",
+}
+PROJECT_COLUMNS = ["project_id", "utility", "name", "lat", "lon", "start_date",
+                   "end_date", "description", "estimated_cost", *DEPENDENCY_COLUMNS]
+
+
 # IDs of projects that come from the seed CSVs. These are re-imported on
 # every startup, so deleting one through the API would be pointless.
 SEED_PROJECT_IDS: set[str] = set()
@@ -128,17 +174,26 @@ def init_db():
             created_at TEXT DEFAULT CURRENT_TIMESTAMP
         )
     """)
+    # Add columns introduced after the table was first created, so existing
+    # app.db files keep working.
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(projects)")}
+    for column, sql_type in DEPENDENCY_COLUMNS.items():
+        if column not in existing:
+            conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {sql_type}")
     conn.commit()
 
     # Sync the seed CSVs on every startup. INSERT OR REPLACE keeps the DB in
     # step with edits to the CSVs (previously the DB was only seeded when
     # empty, so CSV changes never showed up) while leaving projects added
     # through the API untouched.
-    columns = ["project_id", "utility", "name", "lat", "lon", "start_date",
-               "end_date", "description", "estimated_cost"]
+    columns = PROJECT_COLUMNS
     SEED_PROJECT_IDS.clear()
     for csv_path in sorted(DATA_DIR.glob("*_projects.csv")):
         df = pd.read_csv(csv_path)
+        for column in DEPENDENCY_COLUMNS:
+            if column not in df:
+                df[column] = None
+        df["requires_outage"] = df["requires_outage"].fillna(False).astype(bool).astype(int)
         df = df.astype(object).where(pd.notna(df), None)
         SEED_PROJECT_IDS.update(df["project_id"])
         conn.executemany(
@@ -154,8 +209,10 @@ def load_projects() -> pd.DataFrame:
     conn = get_db_connection()
     df = pd.read_sql_query("SELECT * FROM projects", conn)
     conn.close()
-    df["start_date"] = pd.to_datetime(df["start_date"])
-    df["end_date"] = pd.to_datetime(df["end_date"])
+    for column in ["start_date", "end_date", "outage_start", "outage_end",
+                   "road_closure_start", "road_closure_end"]:
+        df[column] = pd.to_datetime(df[column])
+    df["requires_outage"] = df["requires_outage"].fillna(0).astype(bool)
     return df
 
 
@@ -248,18 +305,8 @@ def find_overlaps(
                 relocation_savings = None
 
             results.append({
-                "project_a": {
-                    "id": a["project_id"], "utility": a["utility"], "name": a["name"],
-                    "lat": a["lat"], "lon": a["lon"],
-                    "start_date": str(a["start_date"].date()),
-                    "end_date": str(a["end_date"].date()),
-                },
-                "project_b": {
-                    "id": b["project_id"], "utility": b["utility"], "name": b["name"],
-                    "lat": b["lat"], "lon": b["lon"],
-                    "start_date": str(b["start_date"].date()),
-                    "end_date": str(b["end_date"].date()),
-                },
+                "project_a": project_summary(a),
+                "project_b": project_summary(b),
                 "distance_miles": round(distance, 1),
                 "spatial_conflict": spatial_conflict,
                 "temporal_conflict": temporal_conflict,
@@ -274,6 +321,84 @@ def find_overlaps(
     return results
 
 
+# ---------- Dependency risks ----------
+
+def normalize_road(name) -> str | None:
+    """'US-441', 'us 441' and 'US441' all refer to the same road."""
+    if is_missing(name) or not str(name).strip():
+        return None
+    return "".join(ch for ch in str(name).lower() if ch.isalnum())
+
+
+def window_overlap(start1, end1, start2, end2):
+    """Return (start, end) of the overlap of two date windows, or None."""
+    if any(is_missing(d) for d in (start1, end1, start2, end2)):
+        return None
+    start, end = max(start1, start2), min(end1, end2)
+    return (start, end) if start <= end else None
+
+
+def project_summary(p) -> dict:
+    return {
+        "id": p["project_id"], "utility": p["utility"], "name": p["name"],
+        "lat": p["lat"], "lon": p["lon"],
+        "start_date": str(p["start_date"].date()),
+        "end_date": str(p["end_date"].date()),
+    }
+
+
+def find_risks(
+    df: pd.DataFrame,
+    outage_radius_miles=OUTAGE_RADIUS_MILES,
+    max_regional_miles=MAX_REGIONAL_MILES,
+) -> list[dict]:
+    """
+    Find cross-utility pairs whose work affects shared systems:
+      - "outage": both take equipment out of service nearby at the same time
+      - "road":   both close the same road at the same time
+    One entry per (pair, type), with the window where the two overlap.
+    """
+    records = df.to_dict("records")
+    results = []
+
+    for i in range(len(records)):
+        for j in range(i + 1, len(records)):
+            a, b = records[i], records[j]
+            if a["utility"] == b["utility"]:
+                continue
+            distance = haversine_miles(a["lat"], a["lon"], b["lat"], b["lon"])
+
+            found = []
+            if a["requires_outage"] and b["requires_outage"] and distance <= outage_radius_miles:
+                window = window_overlap(a["outage_start"], a["outage_end"],
+                                        b["outage_start"], b["outage_end"])
+                if window:
+                    found.append(("outage", window, None))
+
+            road_a, road_b = normalize_road(a["road_affected"]), normalize_road(b["road_affected"])
+            if road_a and road_a == road_b and distance <= max_regional_miles:
+                window = window_overlap(a["road_closure_start"], a["road_closure_end"],
+                                        b["road_closure_start"], b["road_closure_end"])
+                if window:
+                    found.append(("road", window, a["road_affected"]))
+
+            for risk_type, (start, end), road in found:
+                results.append({
+                    "type": risk_type,
+                    "project_a": project_summary(a),
+                    "project_b": project_summary(b),
+                    "distance_miles": round(distance, 1),
+                    "start_date": str(start.date()),
+                    "end_date": str(end.date()),
+                    "days": (end - start).days + 1,
+                    "road": road,
+                })
+
+    # Longest shared windows first — those are the hardest to work around
+    results.sort(key=lambda r: (r["type"] != "outage", -r["days"]))
+    return results
+
+
 # ---------- Endpoints ----------
 
 @app.get("/health")
@@ -284,10 +409,12 @@ def health():
 @app.get("/projects")
 def get_projects():
     df = load_projects()
-    df = df.assign(
-        start_date=df["start_date"].dt.strftime("%Y-%m-%d"),
-        end_date=df["end_date"].dt.strftime("%Y-%m-%d"),
-    )
+    df = df.assign(**{
+        column: df[column].dt.strftime("%Y-%m-%d")
+        for column in ["start_date", "end_date", "outage_start", "outage_end",
+                       "road_closure_start", "road_closure_end"]
+    })
+    df = df.astype(object).where(pd.notna(df), None)
     df["is_seed"] = df["project_id"].isin(SEED_PROJECT_IDS)
     return clean_nan(df.to_dict("records"))
 
@@ -297,17 +424,20 @@ def get_overlaps(
     distance_miles: float = Query(DISTANCE_THRESHOLD_MILES, ge=0, le=500),
     date_buffer_days: int = Query(DATE_BUFFER_DAYS, ge=0, le=3650),
     max_regional_miles: float = Query(MAX_REGIONAL_MILES, ge=0, le=1000),
+    outage_radius_miles: float = Query(OUTAGE_RADIUS_MILES, ge=0, le=500),
 ):
     thresholds = {
         "distance_miles": distance_miles,
         "date_buffer_days": date_buffer_days,
         "max_regional_miles": max_regional_miles,
+        "outage_radius_miles": outage_radius_miles,
     }
     df = load_projects()
     if df.empty:
-        return {"count": 0, "overlaps": [], "thresholds": thresholds}
+        return {"count": 0, "overlaps": [], "risks": [], "thresholds": thresholds}
     overlaps = find_overlaps(df, distance_miles, date_buffer_days, max_regional_miles)
-    return {"count": len(overlaps), "overlaps": overlaps, "thresholds": thresholds}
+    risks = find_risks(df, outage_radius_miles, max_regional_miles)
+    return {"count": len(overlaps), "overlaps": overlaps, "risks": risks, "thresholds": thresholds}
 
 
 @app.get("/settings/defaults")
@@ -316,6 +446,7 @@ def get_default_thresholds():
         "distance_miles": DISTANCE_THRESHOLD_MILES,
         "date_buffer_days": DATE_BUFFER_DAYS,
         "max_regional_miles": MAX_REGIONAL_MILES,
+        "outage_radius_miles": OUTAGE_RADIUS_MILES,
     }
 
 
@@ -323,13 +454,15 @@ def get_default_thresholds():
 def create_project(project: ProjectIn):
     conn = get_db_connection()
     try:
+        iso = lambda d: d.isoformat() if d else None
         conn.execute(
-            """INSERT INTO projects
-               (project_id, utility, name, lat, lon, start_date, end_date, description, estimated_cost)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            f"INSERT INTO projects ({', '.join(PROJECT_COLUMNS)}) "
+            f"VALUES ({', '.join('?' * len(PROJECT_COLUMNS))})",
             (project.project_id, project.utility, project.name, project.lat, project.lon,
-             project.start_date.isoformat(), project.end_date.isoformat(),
-             project.description, project.estimated_cost)
+             iso(project.start_date), iso(project.end_date),
+             project.description, project.estimated_cost,
+             int(project.requires_outage), iso(project.outage_start), iso(project.outage_end),
+             project.road_affected, iso(project.road_closure_start), iso(project.road_closure_end))
         )
         conn.commit()
     except sqlite3.IntegrityError:

@@ -1,10 +1,13 @@
 import { useMemo, useState } from 'react'
 import {
   CLEAR_COLOR,
+  RISK_META,
   SEVERITY_COLOR,
   SEVERITY_LABEL,
   formatDate,
+  formatRange,
   isActiveOn,
+  riskKey,
   toISODate,
   utilityColor,
 } from './utils'
@@ -19,25 +22,29 @@ const MONTHS = [
  * Everything the calendar needs to know about one day:
  *  - active: projects under construction that day
  *  - concurrent: flagged conflict pairs where BOTH projects are active that day
+ *  - risks: dependency risks (stacked outages, shared road closures) whose
+ *           overlap window includes that day
  *  - starts / ends: projects that begin or finish that day
  *  - status: 'conflict' | 'watch' | 'clear' | 'idle'
- *      conflict = two conflicting projects are working at the same time
+ *      conflict = two conflicting projects are working at the same time, or
+ *                 a dependency risk is active
  *      watch    = a project that's part of some conflict is active, but its
  *                 conflicting partner isn't active that day
  *      clear    = only conflict-free projects are active
  */
-function describeDay(iso, projects, overlaps, conflictIndex) {
+function describeDay(iso, projects, overlaps, risks, conflictIndex) {
   const active = projects.filter((p) => isActiveOn(p, iso))
   const concurrent = overlaps.filter((o) => isActiveOn(o.project_a, iso) && isActiveOn(o.project_b, iso))
+  const activeRisks = risks.filter((r) => isActiveOn(r, iso))
   const starts = projects.filter((p) => p.start_date === iso)
   const ends = projects.filter((p) => p.end_date === iso)
 
   let status = 'idle'
-  if (concurrent.length) status = 'conflict'
+  if (concurrent.length || activeRisks.length) status = 'conflict'
   else if (active.some((p) => conflictIndex.has(p.project_id))) status = 'watch'
   else if (active.length) status = 'clear'
 
-  return { iso, active, concurrent, starts, ends, status }
+  return { iso, active, concurrent, risks: activeRisks, starts, ends, status }
 }
 
 function monthGrid(year, month) {
@@ -61,7 +68,7 @@ const STATUS_META = {
   idle: { label: 'No construction', short: 'Idle', color: 'transparent' },
 }
 
-export default function CalendarView({ projects, overlaps, conflictIndex, onShowConflict }) {
+export default function CalendarView({ projects, overlaps, risks, conflictIndex, onShowConflict, onShowRisk }) {
   const today = useMemo(() => new Date(), [])
   const [cursor, setCursor] = useState({ year: today.getFullYear(), month: today.getMonth() })
   const [selectedIso, setSelectedIso] = useState(toISODate(today))
@@ -72,16 +79,18 @@ export default function CalendarView({ projects, overlaps, conflictIndex, onShow
     const map = new Map()
     for (const d of cells) {
       const iso = toISODate(d)
-      map.set(iso, describeDay(iso, projects, overlaps, conflictIndex))
+      map.set(iso, describeDay(iso, projects, overlaps, risks, conflictIndex))
     }
     return map
-  }, [cells, projects, overlaps, conflictIndex])
+  }, [cells, projects, overlaps, risks, conflictIndex])
 
   const monthSummary = useMemo(() => {
-    const counts = { conflict: 0, watch: 0, clear: 0, idle: 0 }
+    const counts = { conflict: 0, watch: 0, clear: 0, idle: 0, risk: 0 }
     for (const d of cells) {
       if (d.getMonth() !== cursor.month) continue
-      counts[days.get(toISODate(d)).status] += 1
+      const info = days.get(toISODate(d))
+      counts[info.status] += 1
+      if (info.risks.length) counts.risk += 1
     }
     return counts
   }, [cells, days, cursor.month])
@@ -121,7 +130,7 @@ export default function CalendarView({ projects, overlaps, conflictIndex, onShow
     }
   }
 
-  const selected = selectedIso && (days.get(selectedIso) || describeDay(selectedIso, projects, overlaps, conflictIndex))
+  const selected = selectedIso && (days.get(selectedIso) || describeDay(selectedIso, projects, overlaps, risks, conflictIndex))
   const todayIso = toISODate(today)
 
   return (
@@ -170,6 +179,9 @@ export default function CalendarView({ projects, overlaps, conflictIndex, onShow
               {STATUS_META[s].short}: <strong>{monthSummary[s]}</strong> day{monthSummary[s] === 1 ? '' : 's'}
             </span>
           ))}
+          <span className="cal-summary-item">
+            ⚡🚧 Dependency risk: <strong>{monthSummary.risk}</strong> day{monthSummary.risk === 1 ? '' : 's'}
+          </span>
         </div>
 
         <div className="cal-grid">
@@ -200,6 +212,12 @@ export default function CalendarView({ projects, overlaps, conflictIndex, onShow
                         <span className="chip-word"> conflict{info.concurrent.length === 1 ? '' : 's'}</span>
                       </span>
                     )}
+                    {info.risks.map((r) => (
+                      <span key={riskKey(r)} className="chip chip-risk" title={RISK_META[r.type].label}>
+                        {RISK_META[r.type].icon}
+                        <span className="chip-word"> {r.type === 'road' ? r.road : 'outages'}</span>
+                      </span>
+                    ))}
                     {conflictedActive > 0 && info.concurrent.length === 0 && (
                       <span className="chip chip-watch">
                         ● {conflictedActive}
@@ -231,6 +249,7 @@ export default function CalendarView({ projects, overlaps, conflictIndex, onShow
               <span className="dot" style={{ background: STATUS_META[s].color }} /> {STATUS_META[s].label}
             </span>
           ))}
+          <span>⚡ stacked outage · 🚧 shared road closure</span>
           <span>▶ project starts · ■ project ends</span>
         </div>
       </div>
@@ -242,6 +261,31 @@ export default function CalendarView({ projects, overlaps, conflictIndex, onShow
             <div className="day-status" style={{ '--status': STATUS_META[selected.status].color }}>
               {STATUS_META[selected.status].label}
             </div>
+
+            {selected.risks.length > 0 && (
+              <section>
+                <h4>Dependency risks this day ({selected.risks.length})</h4>
+                {selected.risks.map((r) => (
+                  <button
+                    key={riskKey(r)}
+                    className="day-conflict day-risk"
+                    onClick={() => onShowRisk(r)}
+                    title="Show on map"
+                  >
+                    <span className="badge risk">
+                      {RISK_META[r.type].icon} {RISK_META[r.type].label}
+                      {r.type === 'road' ? ` · ${r.road}` : ''}
+                    </span>
+                    <span className="day-conflict-names">
+                      {r.project_a.name} <em>and</em> {r.project_b.name}
+                    </span>
+                    <span className="distance">
+                      Overlap {formatRange(r.start_date, r.end_date)} · view on map →
+                    </span>
+                  </button>
+                ))}
+              </section>
+            )}
 
             {selected.concurrent.length > 0 && (
               <section>

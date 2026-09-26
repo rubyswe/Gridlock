@@ -1,11 +1,15 @@
 import { useMemo, useState } from 'react'
 import {
   CLEAR_COLOR,
+  RISK_META,
+  RISK_TYPES,
   SEVERITIES,
   SEVERITY_COLOR,
   SEVERITY_LABEL,
   UTILITY_COLOR,
   formatMoney,
+  formatRange,
+  riskKey,
   utilityColor,
 } from './utils'
 
@@ -241,9 +245,81 @@ function YearColumns({ years, tooltip }) {
   )
 }
 
+// ---------- Dependency risks (summary + table) ----------
+
+function RiskPanel({ risks, onShowRisk }) {
+  const byType = RISK_TYPES.map((t) => {
+    const items = risks.filter((r) => r.type === t)
+    return { type: t, count: items.length, days: items.reduce((s, r) => s + r.days, 0) }
+  })
+  const maxDays = Math.max(1, ...byType.map((t) => t.days))
+
+  return (
+    <div className="chart-card full">
+      <h3>Dependency risks</h3>
+      <p className="chart-sub">
+        Where one utility's work affects the other's systems. Bars show total days of overlap.
+      </p>
+      <div className="risk-summary">
+        {byType.map((t) => (
+          <div className="risk-summary-row" key={t.type}>
+            <div className="risk-summary-label">
+              <span className="risk-icon">{RISK_META[t.type].icon}</span>
+              <div>
+                <div className="proj-name">{RISK_META[t.type].label}</div>
+                <div className="proj-util">{RISK_META[t.type].explain}</div>
+              </div>
+            </div>
+            <div className="hbar-track">
+              {t.days > 0 && <div className="hbar-fill risk-fill" style={{ width: `${(t.days / maxDays) * 100}%` }} />}
+            </div>
+            <div className="risk-summary-nums">
+              <strong>{t.count}</strong> pair{t.count === 1 ? '' : 's'} · <strong>{t.days}</strong> days
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {risks.length === 0 ? (
+        <div className="empty small">No dependency risks with the current filters and thresholds.</div>
+      ) : (
+        <div className="table-wrap">
+          <table className="risk-table">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>Projects</th>
+                <th>Overlap window</th>
+                <th className="num">Days</th>
+                <th className="num">Distance</th>
+              </tr>
+            </thead>
+            <tbody>
+              {risks.map((r) => (
+                <tr key={riskKey(r)} onClick={() => onShowRisk(r)} title="Show on map">
+                  <td>
+                    {RISK_META[r.type].icon} {r.type === 'road' ? r.road : 'Outage'}
+                  </td>
+                  <td>
+                    <div>{r.project_a.name}</div>
+                    <div>{r.project_b.name}</div>
+                  </td>
+                  <td>{formatRange(r.start_date, r.end_date)}</td>
+                  <td className="num">{r.days}</td>
+                  <td className="num">{r.distance_miles} mi</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ---------- Dashboard ----------
 
-export default function Insights({ projects, overlaps, conflictIndex }) {
+export default function Insights({ projects, overlaps, risks, conflictIndex, onShowRisk }) {
   const tooltip = useTooltip()
 
   const stats = useMemo(() => {
@@ -311,6 +387,10 @@ export default function Insights({ projects, overlaps, conflictIndex }) {
           <div className="stat-label">Flagged pairs</div>
         </div>
         <div className="stat">
+          <div className="stat-value">{risks.length}</div>
+          <div className="stat-label">⚡🚧 Dependency risks</div>
+        </div>
+        <div className="stat">
           <div className="stat-value">{formatMoney(stats.savings, true) || '$0'}</div>
           <div className="stat-label">Est. savings if coordinated</div>
         </div>
@@ -342,6 +422,7 @@ export default function Insights({ projects, overlaps, conflictIndex }) {
         />
         <UtilityBars rows={stats.utilityRows} tooltip={tooltip} />
         <YearColumns years={stats.years} tooltip={tooltip} />
+        <RiskPanel risks={risks} onShowRisk={onShowRisk} />
       </div>
       {tooltip.node}
     </div>

@@ -36,5 +36,20 @@ restart. Projects added through the UI are kept.
   panel switches between **Conflicts** and **No conflicts**.
 - **Insights**: conflict vs. no-conflict share, conflicts by severity,
   per-utility breakdown, and active projects per year.
-- **Calendar**: month view. Each day shows concurrent conflicts, flagged
-  projects, and conflict-free projects. Click a day for details.
+- **Calendar**: month view. Each day shows concurrent conflicts, dependency
+  risks, flagged projects, and conflict-free projects. Click a day for details.
+
+## Dependency risks
+
+Beyond "same place, same time", GridLock flags cases where one utility's work
+affects the other's:
+
+- **⚡ Stacked outage**: both utilities take equipment out of service within
+  the outage radius (default 25 mi) during overlapping windows, leaving less
+  backup if something else fails.
+- **🚧 Shared road closure**: both utilities close the same road (matched by
+  name, e.g. `US-441` = `us 441`) at the same time, within the regional radius.
+
+Each project can carry these optional CSV columns: `requires_outage`,
+`outage_start`, `outage_end`, `road_affected`, `road_closure_start`,
+`road_closure_end`. The values in the seed CSVs are synthetic.

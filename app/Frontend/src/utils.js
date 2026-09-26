@@ -18,6 +18,24 @@ export const SEVERITY_LABEL = {
 }
 export const SEVERITIES = ['high', 'medium-spatial', 'medium-temporal']
 
+// Dependency risks deliberately get no hue of their own: the palette is
+// already at its color-vision limit, so they're drawn in light neutral ink
+// with a dotted line and always carry an icon + label.
+export const RISK_COLOR = '#e8ecf4'
+export const RISK_META = {
+  outage: {
+    icon: '⚡',
+    label: 'Stacked outage',
+    explain: 'Both utilities take equipment out of service nearby at the same time, leaving less backup if something else fails.',
+  },
+  road: {
+    icon: '🚧',
+    label: 'Shared road closure',
+    explain: 'Both utilities close the same road at the same time, compounding detours and traffic.',
+  },
+}
+export const RISK_TYPES = ['outage', 'road']
+
 export function utilityColor(utility) {
   return UTILITY_COLOR[utility] || NEUTRAL_COLOR
 }
@@ -104,4 +122,31 @@ export function projectInScope(p, filters) {
   if (filters.from && p.end_date < filters.from) return false
   if (filters.to && p.start_date > filters.to) return false
   return true
+}
+
+/** Order-independent key for a pair of projects. */
+export function pairKey(idA, idB) {
+  return idA < idB ? `${idA}|${idB}` : `${idB}|${idA}`
+}
+
+export function riskKey(r) {
+  return `${r.type}:${pairKey(r.project_a.id, r.project_b.id)}`
+}
+
+/** Group risks by project pair and by project id. */
+export function buildRiskIndex(risks) {
+  const byPair = new Map()
+  const byProject = new Map()
+  for (const r of risks) {
+    const k = pairKey(r.project_a.id, r.project_b.id)
+    byPair.set(k, [...(byPair.get(k) || []), r])
+    for (const p of [r.project_a, r.project_b]) {
+      byProject.set(p.id, [...(byProject.get(p.id) || []), r])
+    }
+  }
+  return { byPair, byProject }
+}
+
+export function formatRange(startIso, endIso) {
+  return `${formatDate(startIso)} → ${formatDate(endIso)}`
 }

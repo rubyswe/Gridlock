@@ -96,7 +96,16 @@ const THRESHOLD_FIELDS = [
     min: 10,
     max: 300,
     step: 5,
-    help: 'A same-timeframe conflict only counts if the projects are within this distance of each other.',
+    help: 'A same-timeframe conflict or shared road closure only counts if the projects are within this distance of each other.',
+  },
+  {
+    key: 'outage_radius_miles',
+    label: 'Outage radius',
+    unit: 'mi',
+    min: 1,
+    max: 100,
+    step: 1,
+    help: 'Overlapping equipment outages closer than this are flagged as a stacked-outage risk.',
   },
 ]
 
@@ -110,6 +119,7 @@ export function DetectionSettings({ thresholds, defaults, onChange, loading }) {
         <span>⚙ Detection settings</span>
         <span className="settings-summary">
           {thresholds.distance_miles} mi · {thresholds.date_buffer_days} days · {thresholds.max_regional_miles} mi region
+          · {thresholds.outage_radius_miles} mi outage
         </span>
         {custom && <span className="badge custom">Custom</span>}
         {loading && <span className="settings-loading">Recalculating…</span>}

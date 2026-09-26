@@ -6,14 +6,20 @@ import { DetectionSettings, EMPTY_FILTERS, FilterBar } from './Controls'
 import {
   API_BASE,
   CLEAR_COLOR,
+  RISK_COLOR,
+  RISK_META,
   SEVERITY_COLOR,
   SEVERITY_LABEL,
   buildConflictIndex,
+  buildRiskIndex,
   formatDate,
+  formatRange,
   formatMoney,
   loadPref,
   overlapKey,
+  pairKey,
   projectInScope,
+  riskKey,
   savePref,
   severityColor,
   utilityColor,
@@ -101,7 +107,54 @@ function DeleteButton({ project, onDelete, label = 'Delete' }) {
   )
 }
 
-function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) {
+function RiskChips({ risks }) {
+  if (!risks?.length) return null
+  return (
+    <div className="risk-chips">
+      {risks.map((r) => (
+        <span className="risk-chip" key={riskKey(r)} title={RISK_META[r.type].explain}>
+          {RISK_META[r.type].icon} {r.type === 'road' ? `${r.road} closed by both` : 'Outages overlap'} ·{' '}
+          {formatRange(r.start_date, r.end_date)}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function RiskRow({ risk, isSelected, onSelect }) {
+  const meta = RISK_META[risk.type]
+  return (
+    <li className={`list-row${isSelected ? ' selected' : ''}`} onClick={() => onSelect(risk)}>
+      <div className="row-top">
+        <span className="badge risk">
+          {meta.icon} {meta.label}
+        </span>
+        <span className="distance">{risk.distance_miles} mi apart</span>
+      </div>
+      {[risk.project_a, risk.project_b].map((p) => (
+        <div className="pair-proj" key={p.id}>
+          <span className="dot" style={{ background: utilityColor(p.utility) }} />
+          <div>
+            <div className="proj-name">{p.name}</div>
+            <div className="proj-util">{p.utility}</div>
+          </div>
+        </div>
+      ))}
+      <div className="risk-window">
+        <strong>
+          {risk.type === 'road' ? `${risk.road}: ` : ''}
+          {formatRange(risk.start_date, risk.end_date)}
+        </strong>{' '}
+        <span className="distance">
+          ({risk.days} day{risk.days === 1 ? '' : 's'} overlapping)
+        </span>
+        <div className="risk-explain">{meta.explain}</div>
+      </div>
+    </li>
+  )
+}
+
+function ConflictRow({ overlap, risks, isSelected, onSelect, projectsById, onDelete }) {
   const savings = formatMoney(overlap.potential_savings)
   const relocation = formatMoney(overlap.relocation_savings)
 
@@ -139,6 +192,8 @@ function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) 
           )}
         </div>
       )}
+
+      <RiskChips risks={risks} />
 
       <ExplainButton overlap={overlap} />
     </li>
@@ -180,6 +235,12 @@ const EMPTY_FORM = {
   start_date: '',
   end_date: '',
   estimated_cost: '',
+  requires_outage: false,
+  outage_start: '',
+  outage_end: '',
+  road_affected: '',
+  road_closure_start: '',
+  road_closure_end: '',
 }
 
 function NewProjectForm({ onCreated }) {
@@ -207,6 +268,11 @@ function NewProjectForm({ onCreated }) {
           lat: parseFloat(form.lat),
           lon: parseFloat(form.lon),
           estimated_cost: form.estimated_cost ? parseFloat(form.estimated_cost) : null,
+          outage_start: form.requires_outage ? form.outage_start || null : null,
+          outage_end: form.requires_outage ? form.outage_end || null : null,
+          road_affected: form.road_affected.trim() || null,
+          road_closure_start: form.road_affected.trim() ? form.road_closure_start || null : null,
+          road_closure_end: form.road_affected.trim() ? form.road_closure_end || null : null,
         }),
       })
       if (!res.ok) {
@@ -256,6 +322,42 @@ function NewProjectForm({ onCreated }) {
         </label>
       </div>
       <input type="number" min="0" placeholder="Estimated cost (optional)" value={form.estimated_cost} onChange={update('estimated_cost')} />
+      <fieldset className="dep-fields">
+        <legend>Dependencies (optional)</legend>
+        <label className="check-field">
+          <input
+            type="checkbox"
+            checked={form.requires_outage}
+            onChange={(e) => setForm({ ...form, requires_outage: e.target.checked })}
+          />
+          ⚡ Requires taking equipment out of service
+        </label>
+        {form.requires_outage && (
+          <div className="form-row">
+            <label className="date-field">
+              Outage start
+              <input type="date" value={form.outage_start} onChange={update('outage_start')} required />
+            </label>
+            <label className="date-field">
+              Outage end
+              <input type="date" value={form.outage_end} onChange={update('outage_end')} required />
+            </label>
+          </div>
+        )}
+        <input placeholder="🚧 Road closed during work (e.g. US-441)" value={form.road_affected} onChange={update('road_affected')} />
+        {form.road_affected.trim() && (
+          <div className="form-row">
+            <label className="date-field">
+              Closure start
+              <input type="date" value={form.road_closure_start} onChange={update('road_closure_start')} required />
+            </label>
+            <label className="date-field">
+              Closure end
+              <input type="date" value={form.road_closure_end} onChange={update('road_closure_end')} required />
+            </label>
+          </div>
+        )}
+      </fieldset>
       <div className="form-row">
         <button type="submit" disabled={status === 'saving'}>
           {status === 'saving' ? 'Adding…' : 'Add project'}
@@ -265,7 +367,7 @@ function NewProjectForm({ onCreated }) {
         </button>
       </div>
       {status === 'error' && <div className="form-error">{errorText}</div>}
-      {status === 'done' && <div className="form-ok">Project added — conflicts recalculated.</div>}
+      {status === 'done' && <div className="form-ok">Project added — conflicts and risks recalculated.</div>}
     </form>
   )
 }
@@ -312,8 +414,9 @@ const TABS = [
 export default function App() {
   const [projects, setProjects] = useState([])
   const [overlaps, setOverlaps] = useState([])
+  const [risks, setRisks] = useState([])
   const [tab, setTab] = useState('map')
-  const [view, setView] = useState('conflicts') // 'conflicts' | 'clear'
+  const [view, setView] = useState('conflicts') // 'conflicts' | 'risks' | 'clear'
   const [selectedKey, setSelectedKey] = useState(null)
   const [focusId, setFocusId] = useState(null)
   const [status, setStatus] = useState({ text: 'Connecting to API…', error: false })
@@ -334,7 +437,8 @@ export default function App() {
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((d) => {
         setDefaults(d)
-        setThresholds((t) => t || d)
+        // Fill in any threshold added since the viewer's settings were saved
+        setThresholds((t) => (t ? { ...d, ...t } : d))
       })
       .catch(() => setStatus({ text: `Could not reach API at ${API_BASE} — is the backend running?`, error: true }))
   }, [])
@@ -346,7 +450,11 @@ export default function App() {
     const id = ++requestId.current
     setLoading(true)
     try {
-      const params = new URLSearchParams(Object.entries(thresholds).map(([k, v]) => [k, String(v)]))
+      const params = new URLSearchParams(
+        Object.entries(thresholds)
+          .filter(([, v]) => v !== undefined && v !== null)
+          .map(([k, v]) => [k, String(v)]),
+      )
       const [projectsRes, overlapsRes] = await Promise.all([
         fetch(`${API_BASE}/projects`),
         fetch(`${API_BASE}/overlaps?${params}`),
@@ -359,6 +467,7 @@ export default function App() {
 
       setProjects(projectsData)
       setOverlaps(overlapsData.overlaps)
+      setRisks(overlapsData.risks || [])
       setStatus({
         text: `Loaded ${projectsData.length} projects, ${overlapsData.count} conflicts`,
         error: false,
@@ -407,6 +516,11 @@ export default function App() {
     const ids = new Set(scopedProjects.map((p) => p.project_id))
     return overlaps.filter((o) => ids.has(o.project_a.id) || ids.has(o.project_b.id))
   }, [overlaps, scopedProjects])
+  const scopedRisks = useMemo(() => {
+    const ids = new Set(scopedProjects.map((p) => p.project_id))
+    return risks.filter((r) => ids.has(r.project_a.id) || ids.has(r.project_b.id))
+  }, [risks, scopedProjects])
+  const riskIndex = useMemo(() => buildRiskIndex(risks), [risks])
   const scopedConflictCount = useMemo(
     () => scopedProjects.filter((p) => conflictIndex.has(p.project_id)).length,
     [scopedProjects, conflictIndex],
@@ -418,7 +532,7 @@ export default function App() {
   const clearProjects = useMemo(
     () =>
       scopedProjects
-        .filter((p) => !conflictIndex.has(p.project_id))
+        .filter((p) => !conflictIndex.has(p.project_id) && !riskIndex.byProject.has(p.project_id))
         .map((p) => {
           let nearest = null
           for (const q of projects) {
@@ -429,10 +543,13 @@ export default function App() {
           return { project: p, nearest }
         })
         .sort((a, b) => a.project.start_date.localeCompare(b.project.start_date)),
-    [projects, scopedProjects, conflictIndex],
+    [projects, scopedProjects, conflictIndex, riskIndex],
   )
 
+  // selectedKey holds either an overlap key or a risk key ("outage:A|B")
   const selected = overlaps.find((o) => overlapKey(o) === selectedKey) || null
+  const selectedRisk = risks.find((r) => riskKey(r) === selectedKey) || null
+  const selectedPair = selected || selectedRisk
   const focusProject = projects.find((p) => p.project_id === focusId) || null
 
   const selectConflict = (o) => {
@@ -448,10 +565,19 @@ export default function App() {
     setSelectedKey(null)
     setFocusId(null)
   }
+  const selectRisk = (r) => {
+    setSelectedKey(riskKey(r))
+    setFocusId(null)
+  }
   const showConflictOnMap = (o) => {
     setTab('map')
     setView('conflicts')
     selectConflict(o)
+  }
+  const showRiskOnMap = (r) => {
+    setTab('map')
+    setView('risks')
+    selectRisk(r)
   }
 
   return (
@@ -512,7 +638,13 @@ export default function App() {
 
               {scopedProjects.map((p) => {
                 const entry = conflictIndex.get(p.project_id)
-                const inView = view === 'conflicts' ? Boolean(entry) : !entry
+                const projectRisks = riskIndex.byProject.get(p.project_id) || []
+                const inView =
+                  view === 'conflicts'
+                    ? Boolean(entry)
+                    : view === 'risks'
+                      ? projectRisks.length > 0
+                      : !entry && projectRisks.length === 0
                 const ring = entry ? severityColor(entry.worst) : CLEAR_COLOR
                 return (
                   <CircleMarker
@@ -548,6 +680,22 @@ export default function App() {
                       ) : (
                         <span style={{ color: CLEAR_COLOR }}>✓ No conflicts</span>
                       )}
+                      {projectRisks.map((r) => (
+                        <div key={riskKey(r)} className="popup-risk">
+                          {RISK_META[r.type].icon} {RISK_META[r.type].label}
+                          {r.type === 'road' ? ` (${r.road})` : ''}: {formatRange(r.start_date, r.end_date)}
+                        </div>
+                      ))}
+                      {(p.requires_outage || p.road_affected) && (
+                        <div className="popup-deps">
+                          {p.requires_outage && <div>⚡ Outage: {formatRange(p.outage_start, p.outage_end)}</div>}
+                          {p.road_affected && (
+                            <div>
+                              🚧 {p.road_affected} closed: {formatRange(p.road_closure_start, p.road_closure_end)}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {p.is_seed === false && (
                         <div className="popup-actions">
                           <DeleteButton project={p} onDelete={deleteProject} label="Delete project" />
@@ -572,7 +720,17 @@ export default function App() {
                 />
               )}
 
-              <FlyTo conflict={selected} project={focusProject} />
+              {selectedRisk && (
+                <Polyline
+                  positions={[
+                    [selectedRisk.project_a.lat, selectedRisk.project_a.lon],
+                    [selectedRisk.project_b.lat, selectedRisk.project_b.lon],
+                  ]}
+                  pathOptions={{ color: RISK_COLOR, weight: 3, dashArray: '2 7', lineCap: 'round' }}
+                />
+              )}
+
+              <FlyTo conflict={selectedPair} project={focusProject} />
             </MapContainer>
 
             <div className="legend">
@@ -595,6 +753,9 @@ export default function App() {
               <span>
                 <span className="ring" style={{ borderColor: CLEAR_COLOR }} /> No conflict
               </span>
+              <span>
+                <span className="dotted-line" /> Dependency risk (⚡ outage · 🚧 road)
+              </span>
             </div>
 
             <NewProjectForm onCreated={loadData} />
@@ -615,6 +776,14 @@ export default function App() {
                 onClick={() => switchView('conflicts')}
               >
                 ⚠ Conflicts <span className="seg-count">{scopedOverlaps.length}</span>
+              </button>
+              <button
+                role="tab"
+                aria-selected={view === 'risks'}
+                className={`seg risks${view === 'risks' ? ' active' : ''}`}
+                onClick={() => switchView('risks')}
+              >
+                ⚡ Risks <span className="seg-count">{scopedRisks.length}</span>
               </button>
               <button
                 role="tab"
@@ -647,6 +816,7 @@ export default function App() {
                       <ConflictRow
                         key={overlapKey(o)}
                         overlap={o}
+                        risks={riskIndex.byPair.get(pairKey(o.project_a.id, o.project_b.id))}
                         isSelected={selectedKey === overlapKey(o)}
                         onSelect={selectConflict}
                         projectsById={projectsById}
@@ -656,11 +826,29 @@ export default function App() {
                   </ul>
                 )}
               </>
+            ) : view === 'risks' ? (
+              <>
+                <div className="count">
+                  Places where one utility's work affects the other's: overlapping equipment outages within{' '}
+                  {thresholds?.outage_radius_miles ?? '—'} mi, or the same road closed at the same time.
+                </div>
+                {scopedRisks.length === 0 ? (
+                  <div className="empty">
+                    {status.error ? 'Waiting for the API…' : 'No dependency risks with the current filters and thresholds.'}
+                  </div>
+                ) : (
+                  <ul className="list">
+                    {scopedRisks.map((r) => (
+                      <RiskRow key={riskKey(r)} risk={r} isSelected={selectedKey === riskKey(r)} onSelect={selectRisk} />
+                    ))}
+                  </ul>
+                )}
+              </>
             ) : (
               <>
                 <div className="count">
-                  {clearProjects.length} project{clearProjects.length === 1 ? '' : 's'} with no scheduling or location
-                  conflicts
+                  {clearProjects.length} project{clearProjects.length === 1 ? '' : 's'} with no conflicts or dependency
+                  risks
                 </div>
                 {clearProjects.length === 0 ? (
                   <div className="empty">{status.error ? 'Waiting for the API…' : 'No conflict-free projects match the current filters.'}</div>
@@ -686,7 +874,13 @@ export default function App() {
 
       {tab === 'insights' && (
         <div className="page">
-          <Insights projects={scopedProjects} overlaps={scopedOverlaps} conflictIndex={conflictIndex} />
+          <Insights
+            projects={scopedProjects}
+            overlaps={scopedOverlaps}
+            risks={scopedRisks}
+            conflictIndex={conflictIndex}
+            onShowRisk={showRiskOnMap}
+          />
         </div>
       )}
 
@@ -695,8 +889,10 @@ export default function App() {
           <CalendarView
             projects={scopedProjects}
             overlaps={scopedOverlaps}
+            risks={scopedRisks}
             conflictIndex={conflictIndex}
             onShowConflict={showConflictOnMap}
+            onShowRisk={showRiskOnMap}
           />
         </div>
       )}
