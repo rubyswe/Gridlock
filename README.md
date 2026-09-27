@@ -42,6 +42,32 @@ restart. Projects added through the UI are kept.
 - **Calendar**: month view. Each day shows concurrent conflicts, dependency
   risks, flagged projects, and conflict-free projects. Click a day for details.
 
+## Coordination suggestions
+
+Every flagged pair comes with rule-based suggestions for how the two utilities
+could work together: share crews and a staging yard (same place, same time),
+reuse surveys/permits/access roads (same place, different times), share a
+contractor pool or hand crews off (same timeframe), stagger outages, combine
+road closures, and raise cross-state pairs through regional planning.
+
+## Importing and exporting
+
+- **Import a plan:** on the Map tab, use *Import a utility's plan (CSV)*.
+  Required columns: `project_id, utility, name, lat, lon, start_date,
+  end_date`; everything else is optional (download the template from the
+  panel). Imports are all-or-nothing, and any bad rows are listed by line
+  number. A sample file to try is in `app/data/samples/georgia_power_sample.csv`.
+  An upload can be removed in one click from *Your added projects*.
+- **Export a report:** *Export report* (in the filter bar) downloads the
+  conflicts and risks currently shown, with coordination notes, as a CSV.
+
+## Data sources
+
+Each project shows where it came from: a link to its public filing (for the
+real projects, their Florida PSC dockets), **Synthetic** for illustrative
+seed data, the upload file name, or **Hypothetical** for projects added by
+hand. Seed CSVs accept optional `source_label` and `source_url` columns.
+
 ## Dependency risks
 
 Beyond "same place, same time", Grid flags cases where one utility's work

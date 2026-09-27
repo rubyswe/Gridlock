@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { ProjectSource } from './Tools'
 import {
   CLEAR_COLOR,
   RISK_META,
@@ -330,6 +331,7 @@ export default function CalendarView({ projects, overlaps, risks, conflictIndex,
                           <div className="proj-util">
                             {utilityLabel(p)} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
                           </div>
+                          <ProjectSource project={p} />
                         </div>
                         {entry ? (
                           <span className={`badge ${entry.worst}`}>

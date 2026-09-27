@@ -161,3 +161,109 @@ export function formatRange(startIso, endIso) {
 export function utilityLabel(p) {
   return p.state ? `${p.utility} · ${p.state}` : p.utility
 }
+
+// ---------- CSV import / export ----------
+
+/** Parse CSV text (quoted fields, escaped quotes, CRLF, BOM) into row objects keyed by header. */
+export function parseCSV(text) {
+  const rows = []
+  let row = []
+  let field = ''
+  let quoted = false
+  const src = text.replace(/^﻿/, '')
+  for (let i = 0; i < src.length; i++) {
+    const c = src[i]
+    if (quoted) {
+      if (c === '"' && src[i + 1] === '"') {
+        field += '"'
+        i++
+      } else if (c === '"') quoted = false
+      else field += c
+    } else if (c === '"') quoted = true
+    else if (c === ',') {
+      row.push(field)
+      field = ''
+    } else if (c === '\n' || c === '\r') {
+      if (c === '\r' && src[i + 1] === '\n') i++
+      row.push(field)
+      rows.push(row)
+      row = []
+      field = ''
+    } else field += c
+  }
+  if (field !== '' || row.length) {
+    row.push(field)
+    rows.push(row)
+  }
+  const nonEmpty = rows.filter((r) => r.some((v) => v.trim() !== ''))
+  if (nonEmpty.length === 0) return { headers: [], records: [] }
+  const headers = nonEmpty[0].map((h) => h.trim())
+  const records = nonEmpty.slice(1).map((r) => {
+    const obj = {}
+    headers.forEach((h, i) => {
+      const v = (r[i] ?? '').trim()
+      if (h && v !== '') obj[h] = v // blank cells are omitted so optional fields stay unset
+    })
+    return obj
+  })
+  return { headers, records }
+}
+
+function csvCell(v) {
+  if (v === null || v === undefined) return ''
+  const s = String(v)
+  return /[",\n\r]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+
+export function toCSV(columns, rows) {
+  return [columns.join(','), ...rows.map((r) => columns.map((c) => csvCell(r[c])).join(','))].join('\n')
+}
+
+export function downloadFile(filename, text, type = 'text/csv') {
+  const url = URL.createObjectURL(new Blob([text], { type }))
+  const a = document.createElement('a')
+  a.href = url
+  a.download = filename
+  document.body.appendChild(a)
+  a.click()
+  a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+export const IMPORT_COLUMNS = [
+  'project_id', 'utility', 'state', 'name', 'lat', 'lon', 'start_date', 'end_date', 'estimated_cost',
+  'requires_outage', 'outage_start', 'outage_end', 'road_affected', 'road_closure_start', 'road_closure_end',
+  'source_label', 'source_url', 'description',
+]
+export const REQUIRED_IMPORT_COLUMNS = ['project_id', 'utility', 'name', 'lat', 'lon', 'start_date', 'end_date']
+
+export const IMPORT_TEMPLATE = toCSV(IMPORT_COLUMNS, [
+  {
+    project_id: 'GP-001',
+    utility: 'Georgia Power',
+    state: 'GA',
+    name: 'Example Substation Upgrade',
+    lat: 30.88,
+    lon: -84.2,
+    start_date: '2027-03-01',
+    end_date: '2027-11-30',
+    estimated_cost: 9000000,
+    requires_outage: 'True',
+    outage_start: '2027-06-01',
+    outage_end: '2027-06-21',
+    road_affected: 'US-84',
+    road_closure_start: '2027-04-01',
+    road_closure_end: '2027-04-30',
+    source_label: 'GA PSC filing (example)',
+    source_url: 'https://example.com/filing',
+    description: 'Replace this row with your own projects. Only the first 7 columns are required.',
+  },
+])
+
+/** Where a project came from, for the "Source" badge. */
+export function projectSource(p) {
+  if (p.source_url) return { kind: 'link', label: p.source_label || 'Source', url: p.source_url }
+  if (p.is_seed) return { kind: 'synthetic', label: 'Synthetic' }
+  if (p.source_label) return { kind: 'upload', label: p.source_label }
+  return { kind: 'hypothetical', label: 'Hypothetical' }
+}
