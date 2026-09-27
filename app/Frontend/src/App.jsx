@@ -1,5 +1,5 @@
-import { useEffect, useState, useCallback, useMemo, useRef } from 'react'
-import { MapContainer, TileLayer, CircleMarker, Polyline, Popup, useMap } from 'react-leaflet'
+import { Fragment, useEffect, useState, useCallback, useMemo, useRef } from 'react'
+import { MapContainer, TileLayer, Circle, CircleMarker, Pane, Polyline, Popup, useMap } from 'react-leaflet'
 import Insights from './Charts'
 import CalendarView from './CalendarView'
 import { DetectionSettings, EMPTY_FILTERS, FilterBar } from './Controls'
@@ -36,6 +36,40 @@ function haversineMiles(lat1, lon1, lat2, lon2) {
   return 3958.8 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
+const METERS_PER_MILE = 1609.344
+
+/**
+ * Detection radii around the selected project(s), so the rules are visible:
+ * a solid circle for the same-area distance and, for projects that take an
+ * outage, a dotted circle for the outage radius. Drawn in their own pane
+ * below the markers so they never block clicks.
+ */
+function RadiusCircles({ projects, thresholds }) {
+  if (!thresholds || projects.length === 0) return null
+  return (
+    <Pane name="radius" style={{ zIndex: 350 }}>
+      {projects.map((p) => (
+        <Fragment key={p.project_id}>
+          <Circle
+            center={[p.lat, p.lon]}
+            radius={thresholds.distance_miles * METERS_PER_MILE}
+            interactive={false}
+            pathOptions={{ color: RISK_COLOR, weight: 1.5, opacity: 0.8, fillColor: RISK_COLOR, fillOpacity: 0.07 }}
+          />
+          {p.requires_outage && (
+            <Circle
+              center={[p.lat, p.lon]}
+              radius={thresholds.outage_radius_miles * METERS_PER_MILE}
+              interactive={false}
+              pathOptions={{ color: RISK_COLOR, weight: 1.5, opacity: 0.6, dashArray: '2 6', lineCap: 'round', fill: false }}
+            />
+          )}
+        </Fragment>
+      ))}
+    </Pane>
+  )
+}
+
 // Zoom to show every project once, when the data first arrives. After that
 // the user (or a selection) controls the view.
 function FitAll({ projects }) {
@@ -54,21 +88,28 @@ function FitAll({ projects }) {
 
 // Small helper component so we can move the map imperatively whenever the
 // selected conflict or project changes.
-function FlyTo({ conflict, project }) {
+// Bounds that contain every point plus `padMiles` around each, so the
+// detection circles drawn around those points fit on screen.
+function paddedBounds(points, padMiles) {
+  const lats = points.map((p) => p.lat)
+  const lons = points.map((p) => p.lon)
+  const dLat = padMiles / 69
+  const dLon = padMiles / (69 * Math.cos((Math.max(...lats.map(Math.abs)) * Math.PI) / 180))
+  return [
+    [Math.min(...lats) - dLat, Math.min(...lons) - dLon],
+    [Math.max(...lats) + dLat, Math.max(...lons) + dLon],
+  ]
+}
+
+function FlyTo({ conflict, project, padMiles }) {
   const map = useMap()
   useEffect(() => {
     if (conflict) {
-      map.fitBounds(
-        [
-          [conflict.project_a.lat, conflict.project_a.lon],
-          [conflict.project_b.lat, conflict.project_b.lon],
-        ],
-        { padding: [60, 60], maxZoom: 11 },
-      )
+      map.fitBounds(paddedBounds([conflict.project_a, conflict.project_b], padMiles), { padding: [20, 20] })
     } else if (project) {
-      map.flyTo([project.lat, project.lon], 10, { duration: 0.8 })
+      map.fitBounds(paddedBounds([project], padMiles), { padding: [20, 20] })
     }
-  }, [conflict, project, map])
+  }, [conflict, project, padMiles, map])
   return null
 }
 
@@ -81,6 +122,7 @@ function ExplainButton({ overlap }) {
     e.stopPropagation() // don't trigger the row's onClick (map highlight)
     setLoading(true)
     setError(false)
+    setExplanation(null)
     try {
       const res = await fetch(`${API_BASE}/overlaps/explain`, {
         method: 'POST',
@@ -98,8 +140,18 @@ function ExplainButton({ overlap }) {
     }
   }
 
-  if (explanation) {
-    return <div className={`explanation${error ? ' error' : ''}`}>{explanation}</div>
+  if (explanation && !error) {
+    return <div className="explanation">{explanation}</div>
+  }
+  if (explanation && error && !loading) {
+    return (
+      <div className="explanation error">
+        {explanation}
+        <button className="explain-btn retry" onClick={fetchExplanation}>
+          Try again
+        </button>
+      </div>
+    )
   }
 
   return (
@@ -622,6 +674,12 @@ export default function App() {
   const selectedRisk = risks.find((r) => riskKey(r) === selectedKey) || null
   const selectedPair = selected || selectedRisk
   const focusProject = projects.find((p) => p.project_id === focusId) || null
+  // Projects to draw detection radii around: the selected pair, or the focused project
+  const radiusProjects = selectedPair
+    ? [selectedPair.project_a.id, selectedPair.project_b.id].map((id) => projectsById.get(id)).filter(Boolean)
+    : focusProject
+      ? [focusProject]
+      : []
 
   const selectConflict = (o) => {
     setSelectedKey(overlapKey(o))
@@ -814,8 +872,17 @@ export default function App() {
                 />
               )}
 
+              <RadiusCircles projects={radiusProjects} thresholds={thresholds} />
               <FitAll projects={projects} />
-              <FlyTo conflict={selectedPair} project={focusProject} />
+              <FlyTo
+                conflict={selectedPair}
+                project={focusProject}
+                padMiles={
+                  selectedRisk?.type === 'outage'
+                    ? (thresholds?.outage_radius_miles ?? 25)
+                    : (thresholds?.distance_miles ?? 8)
+                }
+              />
             </MapContainer>
 
             <div className="legend">
@@ -840,6 +907,13 @@ export default function App() {
               <span>
                 <span className="dotted-line" /> Dependency risk (⚡ outage · 🚧 road)
               </span>
+              {thresholds && (
+                <span className="radius-legend">
+                  Select a project or pair to see its radii:
+                  <span className="radius-swatch solid" /> {thresholds.distance_miles} mi same-area
+                  <span className="radius-swatch dotted" /> {thresholds.outage_radius_miles} mi outage
+                </span>
+              )}
             </div>
 
             <NewProjectForm onCreated={loadData} utilities={utilities} />

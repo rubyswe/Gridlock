@@ -23,8 +23,11 @@ cd app/Frontend && npm install && npm run dev
 
 Then open http://localhost:5173.
 
-Optional: put `GEMINI_API_KEY=...` (and optionally `GEMINI_MODEL=...`) in
-`app/.env` to enable the "Explain with AI" button. Everything else works without it.
+Optional: put `GEMINI_API_KEY=...` in `app/.env` to enable the "Explain with
+AI" button. Everything else works without it. When Gemini is busy (503) or
+rate-limited (429), the backend retries once, then tries fallback models;
+answers are remembered so repeat clicks are instant. Override the models with
+`GEMINI_MODEL=...` and `GEMINI_FALLBACK_MODELS=model-a,model-b`.
 
 ## Data
 
