@@ -14,6 +14,10 @@ Endpoints:
   DELETE /projects/{id}       -> remove a user-added project
   DELETE /projects?source_label=... -> remove every project from one upload
   POST /overlaps/explain      -> AI-generated plain-English explanation of a conflict
+  GET /coordination           -> status + notes thread for every conflict pair
+  PUT /coordination/{a}/{b}   -> set a pair's status (and agreed plan)
+  POST /coordination/{a}/{b}/notes -> post a note as one of the pair's utilities
+  DELETE /coordination        -> clear all statuses and notes (demo reset)
 """
 
 import math
@@ -202,6 +206,30 @@ def init_db():
     for column, sql_type in ADDED_COLUMNS.items():
         if column not in existing:
             conn.execute(f"ALTER TABLE projects ADD COLUMN {column} {sql_type}")
+    conn.commit()
+
+    # Coordination between utilities on a flagged pair. A pair is stored with
+    # its two project IDs sorted, so (A, B) and (B, A) are the same thread.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conflict_threads (
+            project_a TEXT NOT NULL,
+            project_b TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open',
+            plan TEXT,
+            updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (project_a, project_b)
+        )
+    """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conflict_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_a TEXT NOT NULL,
+            project_b TEXT NOT NULL,
+            utility TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     conn.commit()
 
     # Sync the seed CSVs on every startup. INSERT OR REPLACE keeps the DB in
@@ -628,6 +656,7 @@ def delete_projects_by_source(source_label: str = Query(min_length=1)):
     ids = [r[0] for r in conn.execute("SELECT project_id FROM projects WHERE source_label = ?", (source_label,))
            if r[0] not in SEED_PROJECT_IDS]
     conn.executemany("DELETE FROM projects WHERE project_id = ?", [(i,) for i in ids])
+    delete_threads_for(conn, ids)
     conn.commit()
     conn.close()
     return {"message": f"Deleted {len(ids)} projects", "count": len(ids)}
@@ -654,11 +683,127 @@ def delete_project(project_id: str):
         )
     conn = get_db_connection()
     cur = conn.execute("DELETE FROM projects WHERE project_id = ?", (project_id,))
+    delete_threads_for(conn, [project_id])
     conn.commit()
     conn.close()
     if cur.rowcount == 0:
         raise HTTPException(404, "Project not found")
     return {"message": "Project deleted", "project_id": project_id}
+
+
+# ---------- Coordination threads ----------
+
+THREAD_STATUSES = ("open", "discussing", "agreed", "resolved")
+
+
+def sorted_pair(a: str, b: str) -> tuple[str, str]:
+    return (a, b) if a <= b else (b, a)
+
+
+def delete_threads_for(conn, project_ids: list[str]) -> None:
+    """Drop coordination history for pairs that involve a removed project."""
+    for pid in project_ids:
+        for table in ("conflict_threads", "conflict_notes"):
+            conn.execute(f"DELETE FROM {table} WHERE project_a = ? OR project_b = ?", (pid, pid))
+
+
+def pair_utilities(conn, a: str, b: str) -> list[str]:
+    rows = conn.execute("SELECT project_id, utility FROM projects WHERE project_id IN (?, ?)", (a, b)).fetchall()
+    if len(rows) != 2:
+        raise HTTPException(404, "Both projects must exist")
+    return sorted({r["utility"] for r in rows})
+
+
+class ThreadStatusIn(BaseModel):
+    status: str
+    plan: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def check_status(self):
+        if self.status not in THREAD_STATUSES:
+            raise ValueError(f"status must be one of {', '.join(THREAD_STATUSES)}")
+        if self.plan is not None:
+            self.plan = self.plan.strip() or None
+        return self
+
+
+class NoteIn(BaseModel):
+    utility: str = Field(min_length=1)
+    body: str = Field(min_length=1, max_length=2000)
+
+
+@app.get("/coordination")
+def get_coordination():
+    """Every pair's status, agreed plan and notes, keyed "A|B" (IDs sorted)."""
+    conn = get_db_connection()
+    threads = {}
+    for r in conn.execute("SELECT * FROM conflict_threads"):
+        threads[f"{r['project_a']}|{r['project_b']}"] = {
+            "status": r["status"], "plan": r["plan"], "updated_at": r["updated_at"], "notes": [],
+        }
+    for r in conn.execute("SELECT * FROM conflict_notes ORDER BY id"):
+        key = f"{r['project_a']}|{r['project_b']}"
+        thread = threads.setdefault(key, {"status": "open", "plan": None, "updated_at": None, "notes": []})
+        thread["notes"].append({"id": r["id"], "utility": r["utility"], "body": r["body"],
+                                "created_at": r["created_at"]})
+    conn.close()
+    return {"threads": threads}
+
+
+@app.put("/coordination/{project_a}/{project_b}")
+def set_thread_status(project_a: str, project_b: str, payload: ThreadStatusIn):
+    a, b = sorted_pair(project_a, project_b)
+    conn = get_db_connection()
+    try:
+        pair_utilities(conn, a, b)
+        conn.execute(
+            """INSERT INTO conflict_threads (project_a, project_b, status, plan, updated_at)
+               VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+               ON CONFLICT(project_a, project_b) DO UPDATE SET
+                 status = excluded.status, plan = excluded.plan, updated_at = CURRENT_TIMESTAMP""",
+            (a, b, payload.status, payload.plan),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": "Status updated", "status": payload.status}
+
+
+@app.post("/coordination/{project_a}/{project_b}/notes", status_code=201)
+def add_note(project_a: str, project_b: str, note: NoteIn):
+    a, b = sorted_pair(project_a, project_b)
+    conn = get_db_connection()
+    try:
+        utilities = pair_utilities(conn, a, b)
+        if note.utility not in utilities:
+            raise HTTPException(400, f"Notes on this pair can only be posted as {' or '.join(utilities)}")
+        conn.execute(
+            "INSERT INTO conflict_notes (project_a, project_b, utility, body) VALUES (?, ?, ?, ?)",
+            (a, b, note.utility, note.body.strip()),
+        )
+        # Posting on an untouched conflict moves it into discussion
+        conn.execute(
+            """INSERT INTO conflict_threads (project_a, project_b, status) VALUES (?, ?, 'discussing')
+               ON CONFLICT(project_a, project_b) DO UPDATE SET
+                 status = CASE WHEN status = 'open' THEN 'discussing' ELSE status END,
+                 updated_at = CURRENT_TIMESTAMP""",
+            (a, b),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": "Note posted"}
+
+
+@app.delete("/coordination")
+def reset_coordination():
+    """Clear every status and note, e.g. to reset before a demo."""
+    conn = get_db_connection()
+    conn.execute("DELETE FROM conflict_notes")
+    conn.execute("DELETE FROM conflict_threads")
+    conn.commit()
+    conn.close()
+    return {"message": "Coordination history cleared"}
 
 
 def is_transient_ai_error(e: Exception) -> bool:

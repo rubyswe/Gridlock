@@ -53,6 +53,16 @@ reuse surveys/permits/access roads (same place, different times), share a
 contractor pool or hand crews off (same timeframe), stagger outages, combine
 road closures, and raise cross-state pairs through regional planning.
 
+## Working a conflict out
+
+Each conflict card has a **Coordinate with the other utility** thread where
+the two utilities involved can post notes (pick which one you're posting as;
+there are no logins in this prototype) and move the conflict through
+**Open → In discussion → Plan agreed → Resolved**, recording what they agreed.
+Statuses show on the cards, the dashboard counts conflicts with a plan, and the
+exported report includes the status, plan and notes. *Clear history* (next to
+the conflict count) resets every thread, e.g. before a demo.
+
 ## Importing and exporting
 
 - **Import a plan:** on the Map tab, use *Import a utility's plan (CSV)*.

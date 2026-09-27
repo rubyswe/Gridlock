@@ -815,3 +815,57 @@ header h1 { font-size: 18px; margin: 0; }
 .radius-swatch.solid { background: rgba(232,236,244,0.1); }
 .radius-swatch.dotted { border-style: dotted; }
 .explain-btn.retry { display: block; margin-top: 8px; }
+
+/* ---------- Coordination threads ---------- */
+.badge.thread-discussing { background: rgba(59,130,246,0.14); color: #93bbfb; }
+.badge.thread-agreed { background: rgba(46,158,111,0.2); color: #5fd3a0; }
+.badge.thread-resolved { background: rgba(46,158,111,0.32); color: #8ff0c2; }
+.thread {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255,255,255,0.02);
+  cursor: default;
+}
+.thread-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+.thread-meta { color: var(--text-dim); font-weight: 400; }
+.thread-plan-summary { padding: 0 12px 10px; font-size: 12.5px; color: #5fd3a0; }
+.thread-body { padding: 4px 12px 12px; display: flex; flex-direction: column; gap: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.thread-status { display: flex; gap: 6px; flex-wrap: wrap; }
+.thread-status .chip-btn:disabled { opacity: 0.6; cursor: default; }
+.thread-plan { display: flex; gap: 8px; }
+.thread-plan input, .thread-compose select, .thread-compose textarea {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+  font-size: 12.5px;
+}
+.thread-plan input { flex: 1; min-width: 0; }
+.thread-empty { color: var(--text-dim); font-size: 12.5px; }
+.thread-notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.thread-notes li { background: rgba(255,255,255,0.03); border-radius: 6px; padding: 8px 10px; }
+.thread-note-head { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.thread-time { margin-left: auto; color: var(--text-dim); font-size: 11px; }
+.thread-note-body { margin-top: 4px; font-size: 13px; line-height: 1.45; white-space: pre-wrap; }
+.thread-compose { display: flex; flex-direction: column; gap: 6px; }
+.thread-compose textarea { resize: vertical; min-height: 44px; }
+.thread-compose .primary-btn { align-self: flex-start; }
+.count-progress .link-btn { margin-left: 8px; font-size: 12px; }
+.stat-of { font-size: 16px; color: var(--text-dim); font-weight: 500; }

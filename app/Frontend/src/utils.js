@@ -267,3 +267,26 @@ export function projectSource(p) {
   if (p.source_label) return { kind: 'upload', label: p.source_label }
   return { kind: 'hypothetical', label: 'Hypothetical' }
 }
+
+// ---------- Coordination threads ----------
+
+export const THREAD_STATUS = {
+  open: { icon: '○', label: 'Open' },
+  discussing: { icon: '💬', label: 'In discussion' },
+  agreed: { icon: '🤝', label: 'Plan agreed' },
+  resolved: { icon: '✓', label: 'Resolved' },
+}
+export const THREAD_STATUSES = ['open', 'discussing', 'agreed', 'resolved']
+
+export function threadFor(threads, o) {
+  return threads[pairKey(o.project_a.id, o.project_b.id)] || { status: 'open', plan: null, notes: [] }
+}
+
+/** SQLite CURRENT_TIMESTAMP is UTC "YYYY-MM-DD HH:MM:SS"; show it in local time. */
+export function formatTimestamp(ts) {
+  if (!ts) return ''
+  const d = new Date(ts.replace(' ', 'T') + 'Z')
+  return Number.isNaN(d.getTime())
+    ? ts
+    : d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })
+}

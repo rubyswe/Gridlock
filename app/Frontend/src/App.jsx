@@ -3,7 +3,7 @@ import { MapContainer, TileLayer, Circle, CircleMarker, Pane, Polyline, Popup, u
 import Insights from './Charts'
 import CalendarView from './CalendarView'
 import { DetectionSettings, EMPTY_FILTERS, FilterBar } from './Controls'
-import { Coordination, ImportPanel, ProjectSource, exportReport } from './Tools'
+import { Coordination, CoordinationThread, ImportPanel, ProjectSource, ThreadStatusBadge, exportReport } from './Tools'
 import {
   API_BASE,
   CLEAR_COLOR,
@@ -15,6 +15,7 @@ import {
   buildRiskIndex,
   formatDate,
   formatRange,
+  threadFor,
   formatMoney,
   loadPref,
   overlapKey,
@@ -223,7 +224,7 @@ function RiskRow({ risk, isSelected, onSelect }) {
   )
 }
 
-function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) {
+function ConflictRow({ overlap, thread, onThreadChanged, isSelected, onSelect, projectsById, onDelete }) {
   const savings = formatMoney(overlap.potential_savings)
   const relocation = formatMoney(overlap.relocation_savings)
 
@@ -233,6 +234,7 @@ function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) 
         <span className="badges">
           <span className={`badge ${overlap.severity}`}>{SEVERITY_LABEL[overlap.severity]}</span>
           <CrossStateBadge pair={overlap} />
+          <ThreadStatusBadge status={thread.status} />
         </span>
         <span className="distance">{overlap.distance_miles} mi apart</span>
       </div>
@@ -267,6 +269,12 @@ function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) 
       )}
 
       <Coordination notes={overlap.coordination} />
+      <CoordinationThread
+        key={`${overlapKey(overlap)}-${thread.plan || ''}`}
+        overlap={overlap}
+        thread={thread}
+        onChanged={onThreadChanged}
+      />
 
       <ExplainButton overlap={overlap} />
     </li>
@@ -525,6 +533,7 @@ export default function App() {
   const [projects, setProjects] = useState([])
   const [overlaps, setOverlaps] = useState([])
   const [risks, setRisks] = useState([])
+  const [threads, setThreads] = useState({})
   const [tab, setTab] = useState('map')
   const [view, setView] = useState('conflicts') // 'conflicts' | 'risks' | 'clear'
   const [selectedKey, setSelectedKey] = useState(null)
@@ -552,6 +561,27 @@ export default function App() {
       })
       .catch(() => setStatus({ text: `Could not reach API at ${API_BASE} — is the backend running?`, error: true }))
   }, [])
+
+  // Coordination statuses and notes change independently of the conflicts,
+  // so they refresh on their own (e.g. right after a note is posted).
+  const loadThreads = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/coordination`)
+      if (res.ok) setThreads((await res.json()).threads)
+    } catch {
+      // keep what we have; the conflicts error banner covers a missing API
+    }
+  }, [])
+
+  useEffect(() => {
+    loadThreads()
+  }, [loadThreads])
+
+  const clearThreads = async () => {
+    if (!window.confirm('Clear every coordination status and note? This can\'t be undone.')) return
+    await fetch(`${API_BASE}/coordination`, { method: 'DELETE' }).catch(() => {})
+    loadThreads()
+  }
 
   const loadData = useCallback(async () => {
     if (!thresholds) return
@@ -647,6 +677,10 @@ export default function App() {
   const scopedConflictCount = useMemo(
     () => scopedProjects.filter((p) => conflictIndex.has(p.project_id)).length,
     [scopedProjects, conflictIndex],
+  )
+  const coordinatedCount = useMemo(
+    () => scopedOverlaps.filter((o) => ['agreed', 'resolved'].includes(threadFor(threads, o).status)).length,
+    [scopedOverlaps, threads],
   )
   const hypotheticals = useMemo(() => projects.filter((p) => p.is_seed === false), [projects])
 
@@ -747,7 +781,7 @@ export default function App() {
             <button
               className="chip-btn export-btn"
               disabled={scopedOverlaps.length + scopedRisks.length === 0}
-              onClick={() => exportReport(scopedOverlaps, scopedRisks)}
+              onClick={() => exportReport(scopedOverlaps, scopedRisks, threads)}
               title="Download the conflicts and risks currently shown as a CSV report"
             >
               ⬇ Export report
@@ -963,6 +997,15 @@ export default function App() {
                       ? ''
                       : 'No conflicts found'
                     : `${scopedOverlaps.length} flagged pair${scopedOverlaps.length === 1 ? '' : 's'} involving ${scopedConflictCount} shown project${scopedConflictCount === 1 ? '' : 's'}`}
+                  {coordinatedCount > 0 && (
+                    <span className="count-progress">
+                      {' '}
+                      · 🤝 {coordinatedCount} with an agreed plan or resolved
+                      <button className="link-btn" onClick={clearThreads}>
+                        Clear history
+                      </button>
+                    </span>
+                  )}
                 </div>
                 {scopedOverlaps.length === 0 ? (
                   <div className="empty">
@@ -976,6 +1019,8 @@ export default function App() {
                       <ConflictRow
                         key={overlapKey(o)}
                         overlap={o}
+                        thread={threadFor(threads, o)}
+                        onThreadChanged={loadThreads}
                         isSelected={selectedKey === overlapKey(o)}
                         onSelect={selectConflict}
                         projectsById={projectsById}
@@ -1037,6 +1082,7 @@ export default function App() {
             projects={scopedProjects}
             overlaps={scopedOverlaps}
             risks={scopedRisks}
+            threads={threads}
             conflictIndex={conflictIndex}
             onShowRisk={showRiskOnMap}
           />
