@@ -19,6 +19,7 @@ Endpoints:
 import math
 import os
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from datetime import date, timedelta
 from math import radians, sin, cos, sqrt, atan2
@@ -37,7 +38,16 @@ DB_PATH = APP_DIR / "app.db"
 DATA_DIR = APP_DIR / "data"
 
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.8-flash")
+# Tried in order when the main model is overloaded (503) or rate-limited (429)
+GEMINI_FALLBACK_MODELS = [
+    m.strip() for m in os.environ.get("GEMINI_FALLBACK_MODELS", "gemini-flash-latest,gemini-3.7-flash").split(",")
+    if m.strip()
+]
+GEMINI_TIMEOUT_MS = 15_000
 _gemini_client = None
+# Explanations already generated, keyed by the conflict's content, so clicking
+# the same conflict again is instant and doesn't spend another request.
+_explanation_cache: dict[tuple, str] = {}
 
 
 def get_gemini_client():
@@ -49,7 +59,8 @@ def get_gemini_client():
         if not api_key:
             return None
         from google import genai
-        _gemini_client = genai.Client(api_key=api_key)
+        from google.genai import types
+        _gemini_client = genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=GEMINI_TIMEOUT_MS))
     return _gemini_client
 
 # Distance threshold in miles: projects closer than this are a "spatial" conflict
@@ -650,27 +661,64 @@ def delete_project(project_id: str):
     return {"message": "Project deleted", "project_id": project_id}
 
 
+def is_transient_ai_error(e: Exception) -> bool:
+    """Overloaded, rate-limited, or timed out: worth retrying or trying another model."""
+    code = getattr(e, "code", None)
+    text = str(e).upper()
+    return code in (429, 500, 503, 504) or any(
+        k in text for k in ("UNAVAILABLE", "RESOURCE_EXHAUSTED", "DEADLINE", "TIMEOUT", "TIMED OUT", "OVERLOADED")
+    )
+
+
 @app.post("/overlaps/explain")
 def explain_conflict(conflict: dict):
+    a, b = conflict["project_a"], conflict["project_b"]
+    cache_key = (a["id"], b["id"], a["start_date"], a["end_date"], b["start_date"], b["end_date"],
+                 conflict["severity"], conflict["distance_miles"])
+    if cache_key in _explanation_cache:
+        return {"explanation": _explanation_cache[cache_key], "cached": True}
+
+    notes = "\n".join(f"- {n['text']}" for n in conflict.get("coordination", []))
     prompt = f"""You are analyzing a construction scheduling conflict between two utility companies.
 
-Project A: {conflict['project_a']['name']} ({conflict['project_a']['utility']}), {conflict['project_a']['start_date']} to {conflict['project_a']['end_date']}
-Project B: {conflict['project_b']['name']} ({conflict['project_b']['utility']}), {conflict['project_b']['start_date']} to {conflict['project_b']['end_date']}
+Project A: {a['name']} ({a['utility']}{', ' + a['state'] if a.get('state') else ''}), {a['start_date']} to {a['end_date']}
+Project B: {b['name']} ({b['utility']}{', ' + b['state'] if b.get('state') else ''}), {b['start_date']} to {b['end_date']}
 Distance apart: {conflict['distance_miles']} miles
-Severity: {conflict['severity']}
+Severity: {conflict['severity']}{' (cross-state pair)' if conflict.get('cross_state') else ''}
+{('Rule-based coordination notes already shown to the user:' + chr(10) + notes) if notes else ''}
 
-In 2 sentences, explain why this is a conflict and suggest one concrete action the utilities could take."""
+In 2 sentences, explain why this is a conflict and suggest one concrete action the utilities could take.
+Do not just repeat the notes above; add something useful."""
 
     client = get_gemini_client()
     if client is None:
         return {"explanation": "AI explanations are disabled — set GEMINI_API_KEY in app/.env.",
                 "error": "missing_api_key"}
 
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=prompt,
-        )
-        return {"explanation": response.text}
-    except Exception as e:
-        return {"explanation": "Unable to generate explanation right now.", "error": str(e)}
+    # The main model gets one quick retry; then each fallback gets one try.
+    attempts = [GEMINI_MODEL, GEMINI_MODEL] + [m for m in GEMINI_FALLBACK_MODELS if m != GEMINI_MODEL]
+    last_error = None
+    any_busy = False
+    for i, model in enumerate(attempts):
+        if i == 1:
+            if not is_transient_ai_error(last_error):
+                continue  # retrying the same model won't help (e.g. bad model name)
+            time.sleep(1.5)
+        try:
+            response = client.models.generate_content(model=model, contents=prompt)
+            text = (response.text or "").strip()
+            if not text:
+                raise RuntimeError("empty response")
+            _explanation_cache[cache_key] = text
+            return {"explanation": text, "model": model}
+        except Exception as e:  # noqa: BLE001 - any SDK/network failure: try the next model
+            last_error = e
+            any_busy = any_busy or is_transient_ai_error(e)
+
+    busy = any_busy
+    return {
+        "explanation": ("The AI service is busy right now. Please try again in a moment."
+                        if busy else "Unable to generate an explanation right now."),
+        "error": str(last_error),
+        "retryable": busy,
+    }
