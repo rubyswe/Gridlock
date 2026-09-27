@@ -17,5 +17,8 @@ CREATE TABLE IF NOT EXISTS projects (
     outage_end TEXT,
     road_affected TEXT,
     road_closure_start TEXT,
-    road_closure_end TEXT
+    road_closure_end TEXT,
+    -- Provenance
+    source_label TEXT,  -- e.g. "FPSC Docket 20250078-EI"
+    source_url TEXT
 );

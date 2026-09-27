@@ -3,6 +3,7 @@ import { MapContainer, TileLayer, CircleMarker, Polyline, Popup, useMap } from '
 import Insights from './Charts'
 import CalendarView from './CalendarView'
 import { DetectionSettings, EMPTY_FILTERS, FilterBar } from './Controls'
+import { Coordination, ImportPanel, ProjectSource, exportReport } from './Tools'
 import {
   API_BASE,
   CLEAR_COLOR,
@@ -17,7 +18,6 @@ import {
   formatMoney,
   loadPref,
   overlapKey,
-  pairKey,
   projectInScope,
   riskKey,
   savePref,
@@ -134,20 +134,6 @@ function CrossStateBadge({ pair }) {
   )
 }
 
-function RiskChips({ risks }) {
-  if (!risks?.length) return null
-  return (
-    <div className="risk-chips">
-      {risks.map((r) => (
-        <span className="risk-chip" key={riskKey(r)} title={RISK_META[r.type].explain}>
-          {RISK_META[r.type].icon} {r.type === 'road' ? `${r.road} closed by both` : 'Outages overlap'} ·{' '}
-          {formatRange(r.start_date, r.end_date)}
-        </span>
-      ))}
-    </div>
-  )
-}
-
 function RiskRow({ risk, isSelected, onSelect }) {
   const meta = RISK_META[risk.type]
   return (
@@ -167,6 +153,7 @@ function RiskRow({ risk, isSelected, onSelect }) {
           <div>
             <div className="proj-name">{p.name}</div>
             <div className="proj-util">{utilityLabel(p)}</div>
+            <ProjectSource project={p} />
           </div>
         </div>
       ))}
@@ -184,7 +171,7 @@ function RiskRow({ risk, isSelected, onSelect }) {
   )
 }
 
-function ConflictRow({ overlap, risks, isSelected, onSelect, projectsById, onDelete }) {
+function ConflictRow({ overlap, isSelected, onSelect, projectsById, onDelete }) {
   const savings = formatMoney(overlap.potential_savings)
   const relocation = formatMoney(overlap.relocation_savings)
 
@@ -206,6 +193,7 @@ function ConflictRow({ overlap, risks, isSelected, onSelect, projectsById, onDel
             <div className="proj-util">
               {utilityLabel(p)} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
             </div>
+            <ProjectSource project={p} />
           </div>
           <DeleteButton project={projectsById.get(p.id)} onDelete={onDelete} label="×" />
         </div>
@@ -226,7 +214,7 @@ function ConflictRow({ overlap, risks, isSelected, onSelect, projectsById, onDel
         </div>
       )}
 
-      <RiskChips risks={risks} />
+      <Coordination notes={overlap.coordination} />
 
       <ExplainButton overlap={overlap} />
     </li>
@@ -247,6 +235,7 @@ function ClearRow({ project, nearest, isSelected, onSelect, onDelete }) {
           <div className="proj-util">
             {utilityLabel(project)} · {formatDate(project.start_date)} → {formatDate(project.end_date)}
           </div>
+          <ProjectSource project={project} />
         </div>
         <DeleteButton project={project} onDelete={onDelete} label="×" />
       </div>
@@ -423,35 +412,53 @@ function NewProjectForm({ onCreated, utilities }) {
   )
 }
 
-function HypotheticalList({ projects, conflictIndex, onDelete, onSelect }) {
+function HypotheticalList({ projects, conflictIndex, onDelete, onDeleteUpload, onSelect }) {
   if (projects.length === 0) return null
+  // Group by where they came from: each CSV upload, plus hand-added what-ifs
+  const groups = new Map()
+  for (const p of projects) {
+    const key = p.source_label || ''
+    groups.set(key, [...(groups.get(key) || []), p])
+  }
   return (
     <div className="hypo-list">
-      <h3>Your hypothetical projects ({projects.length})</h3>
-      <ul>
-        {projects.map((p) => {
-          const entry = conflictIndex.get(p.project_id)
-          return (
-            <li key={p.project_id} onClick={() => onSelect(p)}>
-              <span className="dot" style={{ background: utilityColor(p.utility) }} />
-              <div className="hypo-main">
-                <div className="proj-name">{p.name}</div>
-                <div className="proj-util">
-                  {p.project_id} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
-                </div>
-              </div>
-              {entry ? (
-                <span className={`badge ${entry.worst}`}>
-                  {entry.overlaps.length} conflict{entry.overlaps.length === 1 ? '' : 's'}
-                </span>
-              ) : (
-                <span className="badge clear">✓ Clear</span>
-              )}
-              <DeleteButton project={p} onDelete={onDelete} />
-            </li>
-          )
-        })}
-      </ul>
+      <h3>Your added projects ({projects.length})</h3>
+      {[...groups.entries()].map(([label, items]) => (
+        <div key={label || 'manual'} className="hypo-group">
+          <div className="hypo-group-head">
+            <span>{label || 'Added by hand'}</span>
+            {label && (
+              <button className="delete-btn" onClick={() => onDeleteUpload(label, items.length)}>
+                Remove all {items.length}
+              </button>
+            )}
+          </div>
+          <ul>
+            {items.map((p) => {
+              const entry = conflictIndex.get(p.project_id)
+              return (
+                <li key={p.project_id} onClick={() => onSelect(p)}>
+                  <span className="dot" style={{ background: utilityColor(p.utility) }} />
+                  <div className="hypo-main">
+                    <div className="proj-name">{p.name}</div>
+                    <div className="proj-util">
+                      {p.project_id} · {utilityLabel(p)} · {formatDate(p.start_date)} → {formatDate(p.end_date)}
+                    </div>
+                  </div>
+                  {entry ? (
+                    <span className={`badge ${entry.worst}`}>
+                      {entry.overlaps.length} conflict{entry.overlaps.length === 1 ? '' : 's'}
+                    </span>
+                  ) : (
+                    <span className="badge clear">✓ Clear</span>
+                  )}
+                  <DeleteButton project={p} onDelete={onDelete} />
+                </li>
+              )
+            })}
+          </ul>
+        </div>
+      ))}
     </div>
   )
 }
@@ -539,6 +546,19 @@ export default function App() {
     const t = setTimeout(loadData, 250)
     return () => clearTimeout(t)
   }, [loadData])
+
+  const deleteUpload = async (label, count) => {
+    if (!window.confirm(`Remove all ${count} projects from "${label}"? This can't be undone.`)) return
+    try {
+      const res = await fetch(`${API_BASE}/projects?source_label=${encodeURIComponent(label)}`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Delete failed')
+      setSelectedKey(null)
+      setFocusId(null)
+      loadData()
+    } catch (err) {
+      window.alert(err.message === 'Failed to fetch' ? 'Could not reach the API.' : err.message)
+    }
+  }
 
   const deleteProject = async (p) => {
     if (!window.confirm(`Delete "${p.name}" (${p.project_id})? This can't be undone.`)) return
@@ -665,6 +685,16 @@ export default function App() {
           onChange={setFilters}
           shownCount={scopedProjects.length}
           totalCount={projects.length}
+          extra={
+            <button
+              className="chip-btn export-btn"
+              disabled={scopedOverlaps.length + scopedRisks.length === 0}
+              onClick={() => exportReport(scopedOverlaps, scopedRisks)}
+              title="Download the conflicts and risks currently shown as a CSV report"
+            >
+              ⬇ Export report
+            </button>
+          }
         />
         {thresholds && (
           <DetectionSettings thresholds={thresholds} defaults={defaults} onChange={setThresholds} loading={loading} />
@@ -713,6 +743,9 @@ export default function App() {
                   >
                     <Popup>
                       <strong>{p.name}</strong>
+                      <div className="popup-source">
+                        <ProjectSource project={p} />
+                      </div>
                       <br />
                       {utilityLabel(p)}
                       <br />
@@ -810,10 +843,12 @@ export default function App() {
             </div>
 
             <NewProjectForm onCreated={loadData} utilities={utilities} />
+            <ImportPanel onImported={loadData} />
             <HypotheticalList
               projects={hypotheticals}
               conflictIndex={conflictIndex}
               onDelete={deleteProject}
+              onDeleteUpload={deleteUpload}
               onSelect={selectProject}
             />
           </div>
@@ -867,7 +902,6 @@ export default function App() {
                       <ConflictRow
                         key={overlapKey(o)}
                         overlap={o}
-                        risks={riskIndex.byPair.get(pairKey(o.project_a.id, o.project_b.id))}
                         isSelected={selectedKey === overlapKey(o)}
                         onSelect={selectConflict}
                         projectsById={projectsById}

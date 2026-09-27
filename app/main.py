@@ -10,7 +10,9 @@ Endpoints:
   GET /health                 -> simple healthcheck
   GET /settings/defaults      -> default conflict-detection thresholds
   POST /projects              -> add a new project (persisted to SQLite)
+  POST /projects/bulk         -> import many projects at once (all-or-nothing)
   DELETE /projects/{id}       -> remove a user-added project
+  DELETE /projects?source_label=... -> remove every project from one upload
   POST /overlaps/explain      -> AI-generated plain-English explanation of a conflict
 """
 
@@ -26,7 +28,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 APP_DIR = Path(__file__).parent
 load_dotenv(APP_DIR / ".env")
@@ -85,6 +87,8 @@ class ProjectIn(BaseModel):
     description: str = ""
     estimated_cost: float | None = Field(default=None, ge=0)
     state: str | None = Field(default=None, pattern=r"^[A-Za-z]{2}$")
+    source_label: str | None = Field(default=None, max_length=200)
+    source_url: str | None = Field(default=None, pattern=r"^https?://", max_length=500)
     requires_outage: bool = False
     outage_start: date | None = None
     outage_end: date | None = None
@@ -152,6 +156,9 @@ ADDED_COLUMNS = {
     "road_affected": "TEXT",
     "road_closure_start": "TEXT",
     "road_closure_end": "TEXT",
+    # Where the project came from, e.g. "FPSC Docket 20250078-EI" + link
+    "source_label": "TEXT",
+    "source_url": "TEXT",
 }
 PROJECT_COLUMNS = ["project_id", "utility", "name", "lat", "lon", "start_date",
                    "end_date", "description", "estimated_cost", *ADDED_COLUMNS]
@@ -347,6 +354,9 @@ def project_summary(p) -> dict:
     return {
         "id": p["project_id"], "utility": p["utility"], "name": p["name"],
         "state": None if is_missing(p["state"]) else p["state"],
+        "is_seed": p["project_id"] in SEED_PROJECT_IDS,
+        "source_label": None if is_missing(p["source_label"]) else p["source_label"],
+        "source_url": None if is_missing(p["source_url"]) else p["source_url"],
         "lat": p["lat"], "lon": p["lon"],
         "start_date": str(p["start_date"].date()),
         "end_date": str(p["end_date"].date()),
@@ -412,6 +422,89 @@ def find_risks(
     return results
 
 
+# ---------- Coordination suggestions ----------
+
+def fmt_date(ts) -> str:
+    return f"{ts:%b} {ts.day}, {ts.year}"
+
+
+def coordination_notes(o: dict, pair_risks: list[dict], a: dict, b: dict) -> list[dict]:
+    """
+    Rule-based suggestions for how two utilities could coordinate on a flagged
+    pair: share crews/equipment, reuse site work, stagger outages, combine road
+    closures. Returned as [{"kind": ..., "text": ...}] for the UI and exports.
+    """
+    notes = []
+    d = o["distance_miles"]
+    window = window_overlap(a["start_date"], a["end_date"], b["start_date"], b["end_date"])
+    first, second = sorted((a, b), key=lambda p: p["start_date"])
+
+    if o["severity"] == "high":
+        span = f"{fmt_date(window[0])} to {fmt_date(window[1])}" if window else "overlapping periods"
+        notes.append({"kind": "share", "text": (
+            f"Share crews and equipment: the sites are {d} mi apart and both under way from {span}. "
+            f"One mobilization and a shared staging yard could serve both."
+        )})
+        notes.append({"kind": "meet", "text": (
+            f"Hold a joint planning meeting before {fmt_date(first['start_date'])}, when "
+            f"{first['name']} starts."
+        )})
+    elif o["severity"] == "medium-spatial":
+        gap_months = max(1, round((second["start_date"] - first["end_date"]).days / 30))
+        notes.append({"kind": "reuse", "text": (
+            f"Same area, different times: {second['name']} starts about {gap_months} month"
+            f"{'s' if gap_months != 1 else ''} after {first['name']} finishes. Reuse surveys, permits and "
+            f"access roads, and avoid digging up the same ground twice."
+        )})
+    else:
+        if window:
+            notes.append({"kind": "share", "text": (
+                f"Same timeframe, {d} mi apart: both draw on the region's crews and equipment from "
+                f"{fmt_date(window[0])} to {fmt_date(window[1])}. Consider a shared contractor pool or "
+                f"staggering start dates."
+            )})
+        else:
+            notes.append({"kind": "handoff", "text": (
+                f"Back-to-back work {d} mi apart: {first['name']} ends {fmt_date(first['end_date'])} and "
+                f"{second['name']} starts {fmt_date(second['start_date'])}. Hand crews and equipment "
+                f"straight from one to the other."
+            )})
+
+    for r in pair_risks:
+        if r["type"] == "outage":
+            notes.append({"kind": "outage", "text": (
+                f"Stagger the outages: they overlap for {r['days']} days ({fmt_date(pd.Timestamp(r['start_date']))} "
+                f"to {fmt_date(pd.Timestamp(r['end_date']))}). Running them back-to-back keeps backup "
+                f"capacity in the area."
+            )})
+        elif r["type"] == "road":
+            notes.append({"kind": "road", "text": (
+                f"Combine the {r['road']} closures: both close it {fmt_date(pd.Timestamp(r['start_date']))} to "
+                f"{fmt_date(pd.Timestamp(r['end_date']))}. "
+                f"One shared closure means one detour for the public."
+            )})
+
+    if o.get("cross_state"):
+        notes.append({"kind": "cross_state", "text": (
+            f"Cross-state pair ({a['state']}/{b['state']}): each utility files with a different state "
+            f"regulator, so neither filing shows the other's work. Raise it through the regional "
+            f"planning process."
+        )})
+    return notes
+
+
+def attach_coordination(df: pd.DataFrame, overlaps: list[dict], risks: list[dict]) -> None:
+    by_id = {r["project_id"]: r for r in df.to_dict("records")}
+    risks_by_pair = {}
+    for r in risks:
+        key = frozenset((r["project_a"]["id"], r["project_b"]["id"]))
+        risks_by_pair.setdefault(key, []).append(r)
+    for o in overlaps:
+        a, b = by_id[o["project_a"]["id"]], by_id[o["project_b"]["id"]]
+        pair_risks = risks_by_pair.get(frozenset((a["project_id"], b["project_id"])), [])
+        o["coordination"] = coordination_notes(o, pair_risks, a, b)
+
+
 # ---------- Endpoints ----------
 
 @app.get("/health")
@@ -450,6 +543,7 @@ def get_overlaps(
         return {"count": 0, "overlaps": [], "risks": [], "thresholds": thresholds}
     overlaps = find_overlaps(df, distance_miles, date_buffer_days, max_regional_miles)
     risks = find_risks(df, outage_radius_miles, max_regional_miles)
+    attach_coordination(df, overlaps, risks)
     return {"count": len(overlaps), "overlaps": overlaps, "risks": risks, "thresholds": thresholds}
 
 
@@ -463,18 +557,76 @@ def get_default_thresholds():
     }
 
 
+def project_row(project: ProjectIn) -> list:
+    row = project.model_dump(mode="json")
+    row["requires_outage"] = int(project.requires_outage)
+    row["state"] = project.state.upper() if project.state else None
+    return [row[c] for c in PROJECT_COLUMNS]
+
+
+INSERT_PROJECT_SQL = (
+    f"INSERT INTO projects ({', '.join(PROJECT_COLUMNS)}) "
+    f"VALUES ({', '.join('?' * len(PROJECT_COLUMNS))})"
+)
+
+
+class BulkImport(BaseModel):
+    source_label: str = Field(min_length=1, max_length=200)
+    projects: list[dict] = Field(min_length=1, max_length=5000)
+
+
+@app.post("/projects/bulk", status_code=201)
+def import_projects(payload: BulkImport):
+    """Validate every row first; insert all of them or none, so a bad file
+    never leaves half an upload behind."""
+    errors, valid, seen = [], [], set()
+    conn = get_db_connection()
+    try:
+        existing = {r[0] for r in conn.execute("SELECT project_id FROM projects")}
+        for i, raw in enumerate(payload.projects):
+            row_no = i + 2  # +1 for 1-based, +1 for the CSV header line
+            try:
+                project = ProjectIn.model_validate({**raw, "source_label": raw.get("source_label") or payload.source_label})
+            except ValidationError as e:
+                first = e.errors()[0]
+                field = ".".join(str(x) for x in first["loc"])
+                msg = first["msg"].removeprefix("Value error, ")
+                errors.append({"row": row_no, "error": f"{field}: {msg}" if field else msg})
+                continue
+            if project.project_id in seen:
+                errors.append({"row": row_no, "error": f"duplicate project_id {project.project_id!r} in file"})
+            elif project.project_id in existing:
+                errors.append({"row": row_no, "error": f"project_id {project.project_id!r} already exists"})
+            else:
+                seen.add(project.project_id)
+                valid.append(project)
+        if errors:
+            raise HTTPException(400, {"message": f"{len(errors)} row(s) have problems; nothing was imported",
+                                      "errors": errors[:50]})
+        conn.executemany(INSERT_PROJECT_SQL, [project_row(p) for p in valid])
+        conn.commit()
+    finally:
+        conn.close()
+    return {"message": f"Imported {len(valid)} projects", "count": len(valid)}
+
+
+@app.delete("/projects")
+def delete_projects_by_source(source_label: str = Query(min_length=1)):
+    """Remove every user-added project from one upload (seed data is never touched)."""
+    conn = get_db_connection()
+    ids = [r[0] for r in conn.execute("SELECT project_id FROM projects WHERE source_label = ?", (source_label,))
+           if r[0] not in SEED_PROJECT_IDS]
+    conn.executemany("DELETE FROM projects WHERE project_id = ?", [(i,) for i in ids])
+    conn.commit()
+    conn.close()
+    return {"message": f"Deleted {len(ids)} projects", "count": len(ids)}
+
+
 @app.post("/projects", status_code=201)
 def create_project(project: ProjectIn):
     conn = get_db_connection()
     try:
-        row = project.model_dump(mode="json")
-        row["requires_outage"] = int(project.requires_outage)
-        row["state"] = project.state.upper() if project.state else None
-        conn.execute(
-            f"INSERT INTO projects ({', '.join(PROJECT_COLUMNS)}) "
-            f"VALUES ({', '.join('?' * len(PROJECT_COLUMNS))})",
-            [row[c] for c in PROJECT_COLUMNS],
-        )
+        conn.execute(INSERT_PROJECT_SQL, project_row(project))
         conn.commit()
     except sqlite3.IntegrityError:
         raise HTTPException(409, f"A project with ID {project.project_id!r} already exists")

@@ -1,0 +1,4 @@
+project_id,utility,state,name,lat,lon,start_date,end_date,estimated_cost,requires_outage,outage_start,outage_end,road_affected,road_closure_start,road_closure_end,source_label,source_url,description
+GP-001,Georgia Power,GA,Grady County Substation Upgrade,30.8800,-84.2000,2035-01-15,2035-09-30,7400000,True,2035-04-01,2035-04-20,,,,,,"Synthetic sample for the CSV import demo. About 30 mi north of Duke's Tallahassee-area project, same timeframe, so it should flag a cross-state conflict."
+GP-002,Georgia Power,GA,Bainbridge Feeder Rebuild,30.9000,-84.5800,2027-02-01,2027-08-31,3100000,False,,,US-84,2027-03-01,2027-03-31,,,"Synthetic sample. No other utility's work nearby at the same time."
+GP-003,Georgia Power,GA,Valdosta Transmission Tie,30.8300,-83.2800,2028-05-01,2028-12-31,15800000,True,2028-09-01,2028-09-30,,,,,,"Synthetic sample. No other utility's work nearby at the same time."

@@ -7,7 +7,7 @@ export function hasActiveFilters(f) {
   return f.utilities.length > 0 || Boolean(f.from) || Boolean(f.to)
 }
 
-export function FilterBar({ utilities, filters, onChange, shownCount, totalCount }) {
+export function FilterBar({ utilities, filters, onChange, shownCount, totalCount, extra }) {
   const toggleUtility = (u) => {
     const on = filters.utilities.includes(u)
     onChange({ ...filters, utilities: on ? filters.utilities.filter((x) => x !== u) : [...filters.utilities, u] })
@@ -65,6 +65,7 @@ export function FilterBar({ utilities, filters, onChange, shownCount, totalCount
             Clear filters
           </button>
         )}
+        {extra}
       </div>
     </div>
   )
