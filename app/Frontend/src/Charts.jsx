@@ -10,6 +10,7 @@ import {
   formatMoney,
   formatRange,
   riskKey,
+  threadFor,
   utilityColor,
 } from './utils'
 
@@ -319,7 +320,7 @@ function RiskPanel({ risks, onShowRisk }) {
 
 // ---------- Dashboard ----------
 
-export default function Insights({ projects, overlaps, risks, conflictIndex, onShowRisk }) {
+export default function Insights({ projects, overlaps, risks, threads = {}, conflictIndex, onShowRisk }) {
   const tooltip = useTooltip()
 
   const stats = useMemo(() => {
@@ -385,6 +386,13 @@ export default function Insights({ projects, overlaps, risks, conflictIndex, onS
         <div className="stat">
           <div className="stat-value">{overlaps.length}</div>
           <div className="stat-label">Flagged pairs</div>
+        </div>
+        <div className="stat">
+          <div className="stat-value">
+            {overlaps.filter((o) => ['agreed', 'resolved'].includes(threadFor(threads, o).status)).length}
+            <span className="stat-of"> / {overlaps.length}</span>
+          </div>
+          <div className="stat-label">🤝 Conflicts with a plan</div>
         </div>
         <div className="stat">
           <div className="stat-value">{overlaps.filter((o) => o.cross_state).length}</div>

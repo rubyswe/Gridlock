@@ -6,11 +6,16 @@ import {
   REQUIRED_IMPORT_COLUMNS,
   RISK_META,
   SEVERITY_LABEL,
+  THREAD_STATUS,
+  THREAD_STATUSES,
   downloadFile,
+  formatTimestamp,
   parseCSV,
   projectSource,
+  threadFor,
   toCSV,
   toISODate,
+  utilityColor,
 } from './utils'
 
 // ---------- Source badge ----------
@@ -100,6 +105,9 @@ const REPORT_COLUMNS = [
   'est_budget_overhead_avoided',
   'est_relocation_cost_avoided',
   'coordination',
+  'coordination_status',
+  'agreed_plan',
+  'notes',
 ]
 
 function pairColumns(x) {
@@ -115,7 +123,7 @@ function pairColumns(x) {
   return out
 }
 
-export function exportReport(overlaps, risks) {
+export function exportReport(overlaps, risks, threads = {}) {
   const rows = [
     ...overlaps.map((o) => {
       const start = o.project_a.start_date > o.project_b.start_date ? o.project_a.start_date : o.project_b.start_date
@@ -129,6 +137,7 @@ export function exportReport(overlaps, risks) {
         est_budget_overhead_avoided: o.potential_savings ?? '',
         est_relocation_cost_avoided: o.relocation_savings ?? '',
         coordination: (o.coordination || []).map((n) => n.text).join(' | '),
+        ...threadColumns(threadFor(threads, o)),
       }
     }),
     ...risks.map((r) => ({
@@ -141,6 +150,158 @@ export function exportReport(overlaps, risks) {
     })),
   ]
   downloadFile(`grid-conflict-report-${toISODate(new Date())}.csv`, toCSV(REPORT_COLUMNS, rows))
+}
+
+function threadColumns(t) {
+  return {
+    coordination_status: THREAD_STATUS[t.status]?.label || t.status,
+    agreed_plan: t.plan || '',
+    notes: t.notes.map((n) => `${n.utility}: ${n.body}`).join(' | '),
+  }
+}
+
+// ---------- Coordination thread (status + notes between the two utilities) ----------
+
+export function ThreadStatusBadge({ status }) {
+  if (!status || status === 'open') return null
+  const meta = THREAD_STATUS[status]
+  return (
+    <span className={`badge thread-${status}`}>
+      {meta.icon} {meta.label}
+    </span>
+  )
+}
+
+export function CoordinationThread({ overlap, thread, onChanged }) {
+  const utilities = [...new Set([overlap.project_a.utility, overlap.project_b.utility])]
+  const [open, setOpen] = useState(false)
+  const [utility, setUtility] = useState(utilities[0])
+  const [body, setBody] = useState('')
+  const [plan, setPlan] = useState(thread.plan || '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const base = `${API_BASE}/coordination/${encodeURIComponent(overlap.project_a.id)}/${encodeURIComponent(overlap.project_b.id)}`
+
+  // Always a PUT (status) or POST (note) with a JSON body
+  const send = async (url, method, payload) => {
+    setBusy(true)
+    setError('')
+    try {
+      const res = await fetch(url, {
+        method: method === 'PUT' ? 'PUT' : 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save')
+      }
+      await onChanged()
+      return true
+    } catch (err) {
+      setError(err.message === 'Failed to fetch' ? 'Could not reach the API.' : err.message)
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const setStatus = (status) =>
+    send(base, 'PUT', { status, plan: status === 'agreed' || status === 'resolved' ? plan || thread.plan : null })
+  const savePlan = () => send(base, 'PUT', { status: thread.status, plan })
+  const post = async (e) => {
+    e.preventDefault()
+    if (!body.trim()) return
+    if (await send(`${base}/notes`, 'POST', { utility, body })) setBody('')
+  }
+
+  const showsPlan = thread.status === 'agreed' || thread.status === 'resolved'
+
+  return (
+    // Clicks inside the thread shouldn't re-select the conflict on the map
+    <div className="thread" onClick={(e) => e.stopPropagation()}>
+      <button className="thread-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>
+        <span>💬 Coordinate with the other utility</span>
+        <span className="thread-meta">
+          {thread.notes.length} note{thread.notes.length === 1 ? '' : 's'} · {THREAD_STATUS[thread.status].label}
+        </span>
+        <span className="settings-caret">{open ? '▴' : '▾'}</span>
+      </button>
+
+      {!open && showsPlan && thread.plan && <div className="thread-plan-summary">🤝 {thread.plan}</div>}
+
+      {open && (
+        <div className="thread-body">
+          <div className="thread-status" role="group" aria-label="Coordination status">
+            {THREAD_STATUSES.map((s) => (
+              <button
+                key={s}
+                className={`chip-btn${thread.status === s ? ' active' : ''}`}
+                aria-pressed={thread.status === s}
+                disabled={busy}
+                onClick={() => setStatus(s)}
+              >
+                {THREAD_STATUS[s].icon} {THREAD_STATUS[s].label}
+              </button>
+            ))}
+          </div>
+
+          {showsPlan && (
+            <div className="thread-plan">
+              <input
+                placeholder="What did the utilities agree to? (e.g. shared staging yard, APC outage moved to March)"
+                value={plan}
+                onChange={(e) => setPlan(e.target.value)}
+              />
+              <button className="chip-btn" disabled={busy || plan === (thread.plan || '')} onClick={savePlan}>
+                Save plan
+              </button>
+            </div>
+          )}
+
+          {thread.notes.length === 0 ? (
+            <div className="thread-empty">No notes yet. Start the conversation below.</div>
+          ) : (
+            <ul className="thread-notes">
+              {thread.notes.map((n) => (
+                <li key={n.id}>
+                  <div className="thread-note-head">
+                    <span className="dot" style={{ background: utilityColor(n.utility) }} />
+                    <strong>{n.utility}</strong>
+                    <span className="thread-time">{formatTimestamp(n.created_at)}</span>
+                  </div>
+                  <div className="thread-note-body">{n.body}</div>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <form className="thread-compose" onSubmit={post}>
+            <select value={utility} onChange={(e) => setUtility(e.target.value)} aria-label="Post as">
+              {utilities.map((u) => (
+                <option key={u} value={u}>
+                  Post as {u}
+                </option>
+              ))}
+            </select>
+            <textarea
+              rows={2}
+              placeholder="e.g. We can move our February outage to March."
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) post(e)
+              }}
+            />
+            <button className="primary-btn" type="submit" disabled={busy || !body.trim()}>
+              {busy ? 'Saving…' : 'Post note'}
+            </button>
+          </form>
+          {error && <div className="form-error">{error}</div>}
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ---------- Plan import ----------
